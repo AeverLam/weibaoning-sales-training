@@ -1,0 +1,25 @@
+# Render 部署配置文件
+# 文档: https://render.com/docs/blueprint-spec
+
+services:
+  # Web 服务 - 飞书机器人
+  - type: web
+    name: weibaoning-feishu-bot
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: |
+      pip install -r requirements-render.txt
+    startCommand: |
+      bash start.sh
+    envVars:
+      - key: FEISHU_APP_ID
+        value: cli_a938ac2a24391bcb
+      - key: FEISHU_APP_SECRET
+        sync: false  # 需要在Render控制台手动设置
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: FLASK_ENV
+        value: production
+    healthCheckPath: /health
+    autoDeploy: true

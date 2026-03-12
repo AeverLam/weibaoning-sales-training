@@ -1,0 +1,48 @@
+{
+  "name": "weibaoning-sales-training",
+  "version": "1.0.0",
+  "description": "维宝宁（注射用醋酸曲普瑞林微球）销售话术对练AI Agent - 用于医药代表销售培训",
+  "author": "Huang Xuan",
+  "license": "MIT",
+  "skills": [
+    {
+      "name": "weibaoning-sales-training",
+      "entry": "scripts/start_practice.py",
+      "description": "维宝宁销售话术对练系统"
+    }
+  ],
+  "dependencies": {
+    "python": ">=3.8"
+  },
+  "files": [
+    "SKILL.md",
+    "references/product-knowledge.md",
+    "references/sales-scripts.md",
+    "references/doctor-profiles.md",
+    "references/objections-handling.md",
+    "references/scenarios.md",
+    "scripts/start_practice.py",
+    "scripts/evaluate_response.py",
+    "scripts/generate_report.py"
+  ],
+  "capabilities": [
+    "销售话术对练",
+    "医生角色扮演",
+    "回答评估",
+    "学习报告生成",
+    "产品知识查询"
+  ],
+  "indications": [
+    "前列腺癌",
+    "子宫内膜异位症"
+  ],
+  "knowledge_base_stats": {
+    "total_lines": 3030,
+    "product_knowledge": 988,
+    "sales_scripts": 482,
+    "doctor_profiles": 243,
+    "objections_handling": 741,
+    "scenarios": 273,
+    "skill_documentation": 303
+  }
+}
