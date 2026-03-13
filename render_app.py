@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-维宝宁销售话术对练 - 简化版飞书机器人
+维宝宁销售话术对练 - 飞书机器人
 """
 
 import json
 import os
+import sys
 from datetime import datetime
 from flask import Flask, request, jsonify
+
+# 添加当前目录到路径
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from feishu_api import get_feishu_api
 
 app = Flask(__name__)
 
@@ -60,10 +66,12 @@ def webhook_feishu():
         
         data = request.get_json() or {}
         
+        # 处理飞书 Challenge 验证
         challenge = data.get('challenge')
         if challenge:
             return jsonify({'challenge': challenge})
         
+        # 获取事件数据
         event = data.get('event', {})
         message = event.get('message', {})
         sender = event.get('sender', {})
@@ -82,11 +90,22 @@ def webhook_feishu():
             message_text = '[非文本消息]'
         
         sender_id = sender.get('sender_id', {}).get('open_id', '')
+        
+        # 处理消息并生成回复
         reply_text = handler.handle_message(message_text, sender_id, "用户")
+        
+        # ========== 关键修复：发送回复消息 ==========
+        feishu_api = get_feishu_api()
+        if feishu_api and sender_id:
+            result = feishu_api.send_text_message(sender_id, reply_text)
+            print(f"Send message result: {result}")
+        else:
+            print(f"Cannot send message: feishu_api={feishu_api is not None}, sender_id={sender_id}")
         
         return jsonify({'status': 'ok'})
         
     except Exception as e:
+        print(f"Webhook error: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 if __name__ == '__main__':
