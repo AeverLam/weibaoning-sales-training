@@ -42,15 +42,17 @@ class FeishuAPI:
         except:
             return None
     
-    def send_text_message(self, receive_id, text):
-        """发送文本消息"""
+    def send_text_message(self, receive_id, text, chat_type='open_id'):
+        """发送文本消息
+        chat_type: 'open_id'表示单聊，'chat_id'表示群聊
+        """
         token = self._get_token()
         if not token:
             return {"error": "Failed to get token"}
         
         url = f"{self.BASE_URL}/im/v1/messages"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        params = {"receive_id_type": "open_id"}
+        params = {"receive_id_type": chat_type}
         content = json.dumps({"text": text})
         payload = {"receive_id": receive_id, "msg_type": "text", "content": content}
         
@@ -66,7 +68,8 @@ class FeishuAPI:
 def get_feishu_api():
     """获取飞书 API 客户端"""
     app_id = os.environ.get('FEISHU_APP_ID', '')
-    app_secret = os.environ.get('FEISHU_APP_SECRET', '')
+    # 兼容两种变量名
+    app_secret = os.environ.get('FEISHU_APP_SECRET', '') or os.environ.get('FEISHU_SECRET', '')
     if app_id and app_secret:
         return FeishuAPI(app_id, app_secret)
     return None
