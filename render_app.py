@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#### -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 维宝宁销售话术对练 - 飞书机器人
 """
@@ -61,3 +61,59 @@ def remove_mentions(text):
     """移除消息中的@mention"""
     text = re.sub(r'@_user_\w+\s*', '', text)
     text = re.sub(r'@\S+\s*', '', text)
+    return text.strip()
+
+@app.route('/webhook/feishu', methods=['POST', 'GET'])
+def webhook_feishu():
+    try:
+        if request.method == 'GET':
+            return jsonify({'status': 'ok'})
+        
+        data = request.get_json() or {}
+        
+        challenge = data.get('challenge')
+        if challenge:
+            return jsonify({'challenge': challenge})
+        
+        event = data.get('event', {})
+        message = event.get('message', {})
+        sender = event.get('sender', {})
+        
+        message_type = message.get('message_type', '')
+        content = message.get('content', '{}')
+        chat_type = message.get('chat_type', '')
+        chat_id = message.get('chat_id', '')
+        
+        try:
+            content_data = json.loads(content)
+        except:
+            content_data = {'text': content}
+        
+        if message_type == 'text':
+            raw_message = content_data.get('text', '').strip()
+            message_text = remove_mentions(raw_message)
+        else:
+            message_text = '[非文本消息]'
+        
+        sender_id = sender.get('sender_id', {}).get('open_id', '')
+        
+        reply_text = handler.handle_message(message_text, sender_id, "用户")
+        
+        feishu_api = get_feishu_api()
+        if feishu_api:
+            if chat_type == 'group' and chat_id:
+                result = feishu_api.send_text_message(chat_id, reply_text, chat_type='chat_id')
+                print(f"Send group message result: {result}")
+            elif sender_id:
+                result = feishu_api.send_text_message(sender_id, reply_text)
+                print(f"Send private message result: {result}")
+        
+        return jsonify({'status': 'ok'})
+        
+    except Exception as e:
+        print(f"Webhook error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
