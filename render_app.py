@@ -152,6 +152,7 @@ def webhook_feishu():
         
         event_type = header.get('event_type', '')
         print(f"[事件类型] {event_type}")
+        print(f"[收到事件] 完整数据: {json.dumps(data, ensure_ascii=False)[:500]}")
         
         # 处理所有事件
         if event_type == 'im.message.receive_v1':
