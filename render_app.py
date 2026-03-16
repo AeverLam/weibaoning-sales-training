@@ -23,7 +23,26 @@ class FeishuMessageHandler:
     def handle_message(self, message_text, user_id, user_name=""):
         message_text = message_text.strip()
         
-        if message_text in ['开始练习', '开始对练', 'start']:
+        # 处理数字选择（1-5）
+        if message_text in ['1', '2', '3', '4', '5']:
+            doctor_types = {
+                '1': '主任级专家',
+                '2': '科室主任',
+                '3': '主治医师',
+                '4': '住院医师',
+                '5': '带组专家'
+            }
+            doctor_type = doctor_types[message_text]
+            return f"""✅ 您选择了【{doctor_type}】
+
+现在开始销售话术对练！
+
+我是{doctor_type}，请开始您的拜访。
+
+💡 提示：先介绍自己和产品，然后询问医生需求。
+发送【结束】结束对练。"""
+        
+        elif message_text in ['开始练习', '开始对练', 'start']:
             return """👋 您好！欢迎开始维宝宁销售话术对练。
 
 请回复数字选择医生角色：
