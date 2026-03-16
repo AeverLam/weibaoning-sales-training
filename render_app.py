@@ -185,6 +185,22 @@ def webhook_feishu():
             # 异步发送回复
             send_message_async(sender_id, message_id, reply_text)
             
+        elif event_type == 'im.chat.access_event.bot_p2p_chat_entered_v1':
+            # 用户进入单聊，发送欢迎消息
+            print("[事件] 用户进入单聊，发送欢迎消息")
+            sender_id = event.get('operator_id', {}).get('open_id', '')
+            if sender_id:
+                welcome_text = """👋 您好！欢迎开始维宝宁销售话术对练。
+
+请回复数字选择医生角色：
+1. 主任级专家（难度⭐⭐⭐⭐⭐）
+2. 科室主任（难度⭐⭐⭐⭐）
+3. 主治医师（难度⭐⭐⭐）
+4. 住院医师（难度⭐⭐）
+5. 带组专家（难度⭐⭐⭐⭐）
+
+💡 建议从难度3星的【主治医师】开始练习！"""
+                send_message_async(sender_id, None, welcome_text)
         else:
             print(f"[未处理事件] {event_type}")
         
