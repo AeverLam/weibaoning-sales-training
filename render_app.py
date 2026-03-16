@@ -87,13 +87,13 @@ def send_message_async(open_id, message_id, text):
                 "Content-Type": "application/json"
             }
             
-        # 如果有 message_id，则回复该消息
-        if message_id:
-            url = f"{url}/{message_id}/reply"
-            data = {
-                "msg_type": "text",
-                "content": json.dumps({"text": text})
-            }
+            # 如果有 message_id，则回复该消息
+            if message_id:
+                url = f"{url}/{message_id}/reply"
+                data = {
+                    "msg_type": "text",
+                    "content": json.dumps({"text": text})
+                }
             else:
                 # 否则发送新消息
                 params = {"receive_id_type": "open_id"}
@@ -103,7 +103,7 @@ def send_message_async(open_id, message_id, text):
                     "content": json.dumps({"text": text})
                 }
                 url = f"{url}?{requests.compat.urlencode(params)}"
-            
+
             print(f"[调试] 发送请求，url={url[:50]}...")            
             resp = requests.post(url, headers=headers, json=data, timeout=10)
             print(f"[发送消息] status={resp.status_code}, response={resp.text[:200]}")
