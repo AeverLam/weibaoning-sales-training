@@ -74,7 +74,9 @@ def send_message_async(open_id, message_id, text):
     """异步发送消息回复"""
     def send():
         try:
+            print(f"[调试] 开始发送消息，open_id={open_id[:10]}...")            
             token = get_tenant_access_token()
+            print(f"[调试] 获取token成功: {token[:20]}...")           
             if not token:
                 print("[错误] 无法获取token")
                 return
@@ -101,8 +103,11 @@ def send_message_async(open_id, message_id, text):
                 }
                 url = f"{url}?{requests.compat.urlencode(params)}"
             
+            print(f"[调试] 发送请求，url={url[:50]}...")            
             resp = requests.post(url, headers=headers, json=data, timeout=10)
             print(f"[发送消息] status={resp.status_code}, response={resp.text[:200]}")
+            if resp.status_code != 200:
+                print(f"[错误] 发送失败: {resp.text}") 
             
         except Exception as e:
             print(f"[错误] 发送消息失败: {e}")
