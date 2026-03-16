@@ -169,6 +169,8 @@ def webhook_feishu():
             
             if message_type == 'text':
                 message_text = content_data.get('text', '').strip()
+                # 去掉 @机器人的部分
+                message_text = message_text.replace('@_user_1', '').strip()
             else:
                 message_text = '[非文本消息]'
             
