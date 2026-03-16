@@ -130,17 +130,19 @@ def health():
     return jsonify({'status': 'healthy'})
 
 @app.route('/webhook/feishu', methods=['POST', 'GET'])
+@app.route('/webhook/feishu', methods=['POST', 'GET'])
 def webhook_feishu():
     try:
         if request.method == 'GET':
             return jsonify({'status': 'ok', 'message': '飞书 webhook 服务正常运行'})
         
         data = request.get_json() or {}
-        print(f"[收到请求] {json.dumps(data, ensure_ascii=False)[:500]}")
+        print(f"[收到请求] {json.dumps(data, ensure_ascii=False)}")  # 打印完整请求
         
         # URL 验证
         challenge = data.get('challenge')
         if challenge:
+            print(f"[验证] challenge={challenge}")
             return jsonify({'challenge': challenge})
         
         # 处理消息
@@ -148,7 +150,9 @@ def webhook_feishu():
         event = data.get('event', {})
         
         event_type = header.get('event_type', '')
+        print(f"[事件类型] {event_type}")
         
+        # 处理所有事件
         if event_type == 'im.message.receive_v1':
             message = event.get('message', {})
             sender = event.get('sender', {})
@@ -173,11 +177,13 @@ def webhook_feishu():
             
             # 处理消息
             reply_text = handler.handle_message(message_text, sender_id, "用户")
+            print(f"[回复内容] {reply_text[:50]}...")
             
             # 异步发送回复
             send_message_async(sender_id, message_id, reply_text)
             
-            return jsonify({'status': 'ok'})
+        else:
+            print(f"[未处理事件] {event_type}")
         
         return jsonify({'status': 'ok'})
         
@@ -186,7 +192,7 @@ def webhook_feishu():
         import traceback
         traceback.print_exc()
         return jsonify({'status': 'error', 'message': str(e)}), 500
-
+        
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
