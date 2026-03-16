@@ -87,12 +87,13 @@ def send_message_async(open_id, message_id, text):
                 "Content-Type": "application/json"
             }
             
-            # 如果有 message_id，则回复该消息
-            if message_id:
-                url = f"{url}/{message_id}/reply"
-                data = {
-                    "content": json.dumps({"text": text})
-                }
+        # 如果有 message_id，则回复该消息
+        if message_id:
+            url = f"{url}/{message_id}/reply"
+            data = {
+                "msg_type": "text",
+                "content": json.dumps({"text": text})
+            }
             else:
                 # 否则发送新消息
                 params = {"receive_id_type": "open_id"}
