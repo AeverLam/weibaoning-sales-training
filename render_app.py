@@ -35,7 +35,9 @@ def send_msg(open_id, msg_id, text):
     def do():
         try:
             token = get_token()
-            if not token: return
+            if not token: 
+                print("[错误] 无法获取token")
+                return
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             if msg_id:
                 url = f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/reply"
@@ -43,11 +45,14 @@ def send_msg(open_id, msg_id, text):
             else:
                 url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
                 data = {"receive_id": open_id, "msg_type": "text", "content": json.dumps({"text": text})}
-            requests.post(url, headers=headers, json=data, timeout=10)
-        except: pass
+            resp = requests.post(url, headers=headers, json=data, timeout=10)
+            print(f"[发送消息] status={resp.status_code}")
+        except Exception as e:
+            print(f"[发送错误] {e}")
     threading.Thread(target=do, daemon=True).start()
 def handle_msg(text, user_id):
     text = text.strip()
+    print(f"[处理消息] text={text[:30]}")
     
     if text in ['开始练习', 'start', '开始']:
         users[user_id] = {'step': 0, 'role': None, 'scores': []}
@@ -95,39 +100,55 @@ def handle_msg(text, user_id):
     return f"👨‍⚕️ 医生说：{doctor_text}\n\n📊 上轮评分：{user_score}/10\n\n🎬 第{step+1}轮：{STAGES[step]}\n💬 请回复..."
 @app.route('/')
 def index():
-    return jsonify({'status': 'ok', 'version': 'final-v1'})
+    return jsonify({'status': 'ok', 'version': 'final-v2'})
 @app.route('/webhook/feishu', methods=['POST', 'GET'])
 def webhook():
     try:
+        print(f"[收到请求] method={request.method}")
+        
         if request.method == 'GET':
             return jsonify({'status': 'ok'})
         
         data = request.get_json() or {}
+        print(f"[请求数据] {json.dumps(data, ensure_ascii=False)[:200]}")
         
         if 'challenge' in data:
             return jsonify({'challenge': data['challenge']})
         
         header = data.get('header', {})
         event = data.get('event', {})
+        event_type = header.get('event_type', '')
         
-        if header.get('event_type') == 'im.message.receive_v1':
+        print(f"[事件类型] {event_type}")
+        
+        # 处理消息事件
+        if event_type in ['im.message.receive_v1', 'im.message.p2p_msg']:
             message = event.get('message', {})
             sender = event.get('sender', {})
             
             if message.get('message_type') == 'text':
                 try:
-                    text = json.loads(message.get('content', '{}')).get('text', '').strip()
+                    content = json.loads(message.get('content', '{}'))
+                    text = content.get('text', '').strip()
                 except:
-                    text = message.get('content', '').strip()
+                    text = str(message.get('content', '')).strip()
+                
+                # 去掉@机器人的部分
+                text = text.replace('@_user_1', '').replace('@维宝宁销售训练助手', '').strip()
                 
                 user_id = sender.get('sender_id', {}).get('open_id', '')
                 msg_id = message.get('message_id', '')
                 
-                reply = handle_msg(text, user_id)
-                send_msg(user_id, msg_id, reply)
+                print(f"[消息] user={user_id}, text={text[:30]}")
+                
+                if text and user_id:
+                    reply = handle_msg(text, user_id)
+                    print(f"[回复] {reply[:50]}")
+                    send_msg(user_id, msg_id, reply)
         
         return jsonify({'status': 'ok'})
     except Exception as e:
+        print(f"[错误] {e}")
         return jsonify({'status': 'error'}), 500
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
