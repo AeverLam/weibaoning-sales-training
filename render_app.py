@@ -26,21 +26,32 @@ class FeishuMessageHandler:
         # 处理数字选择（1-5）
         if message_text in ['1', '2', '3', '4', '5']:
             doctor_types = {
-                '1': '主任级专家',
-                '2': '科室主任',
-                '3': '主治医师',
-                '4': '住院医师',
-                '5': '带组专家'
+                '1': ('主任级专家', '学术严谨，注重临床数据'),
+                '2': ('科室主任', '管理忙碌，关注效率和效果'),
+                '3': ('主治医师', '实用导向，经验丰富'),
+                '4': ('住院医师', '学习导向，听从上级'),
+                '5': ('带组专家', '影响力大，决策权高')
             }
-            doctor_type = doctor_types[message_text]
+            doctor_type, characteristic = doctor_types[message_text]
+            
+            # 记录用户会话
+            user_sessions[user_id] = {
+                'doctor_type': doctor_type,
+                'characteristic': characteristic,
+                'step': 'greeting'  # 当前步骤：问候
+            }
+            
             return f"""✅ 您选择了【{doctor_type}】
+
+👨‍⚕️ 医生角色设定：
+• 类型：{doctor_type}
+• 特点：{characteristic}
 
 现在开始销售话术对练！
 
-我是{doctor_type}，请开始您的拜访。
+【医生】：你好，有什么事吗？（医生抬头看了你一眼，继续忙手头的工作）
 
-💡 提示：先介绍自己和产品，然后询问医生需求。
-发送【结束】结束对练。"""
+💡 提示：请开始你的开场白，介绍自己和产品。"""
         
         elif message_text in ['开始练习', '开始对练', 'start']:
             return """👋 您好！欢迎开始维宝宁销售话术对练。
@@ -54,6 +65,52 @@ class FeishuMessageHandler:
 
 💡 建议从难度3星的【主治医师】开始练习！"""
         
+        # 处理对练中的对话
+        elif user_id in user_sessions:
+            session = user_sessions[user_id]
+            doctor_type = session['doctor_type']
+            characteristic = session['characteristic']
+            step = session['step']
+            
+            # 根据步骤生成医生回复
+            if step == 'greeting':
+                # 用户已经打过招呼，医生询问需求
+                session['step'] = 'inquiry'
+                return f"""【医生】：嗯，维宝宁我听说过，你简单说说看，这个药有什么特点？适合什么样的患者？
+
+💡 提示：用FAB法则介绍产品（特点-优势-利益）"""
+            
+            elif step == 'inquiry':
+                # 用户介绍产品后，医生提出异议
+                session['step'] = 'objection'
+                if doctor_type == '主任级专家':
+                    return """【医生】：你说得很好，但我需要看到更多的临床数据。你们有III期临床试验的结果吗？发表在哪些期刊上？
+
+💡 提示：准备学术资料，引用权威指南"""
+                elif doctor_type == '科室主任':
+                    return """【医生】：价格怎么样？进医保了吗？我们科室用药要考虑成本效益。
+
+💡 提示：准备医保政策和性价比分析"""
+                else:
+                    return """【医生】：这个药我考虑考虑，你先放份资料在我这吧。
+
+💡 提示：尝试促成，询问具体顾虑"""
+            
+            elif step == 'objection':
+                # 结束对练
+                del user_sessions[user_id]
+                return f"""✅ 对练结束！
+
+【总结】
+• 医生类型：{doctor_type}
+• 你的表现：积极尝试，需要改进异议处理
+
+【建议】
+1. 准备更充分的学术资料
+2. 练习价格异议处理话术
+3. 学会识别购买信号
+
+发送【开始练习】重新开始！"""
         elif message_text in ['帮助', 'help', '菜单']:
             return """🤖 维宝宁销售话术对练助手
 
@@ -70,6 +127,9 @@ class FeishuMessageHandler:
         
         else:
             return f"收到您的消息：{message_text}\n\n发送【开始练习】开始销售话术对练，或发送【帮助】查看指令列表。"
+
+# 用户会话存储（内存存储，重启后清空）
+user_sessions = {}
 
 handler = FeishuMessageHandler()
 
