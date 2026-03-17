@@ -35,35 +35,47 @@ def send_msg(open_id, msg_id, text):
     def do():
         try:
             token = get_token()
-            if not token: 
-                print("[错误] 无法获取token")
-                return
+            if not token: return
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            
-            # 群聊回复
             if msg_id:
                 url = f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/reply"
-                data = {
-                    "msg_type": "text",
-                    "content": json.dumps({"text": text})
-                }
+                data = {"msg_type": "text", "content": json.dumps({"text": text})}
             else:
-                # 单聊发送
                 url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
-                data = {
-                    "receive_id": open_id,
-                    "msg_type": "text",
-                    "content": json.dumps({"text": text})
-                }
-            
-            resp = requests.post(url, headers=headers, json=data, timeout=10)
-            print(f"[发送消息] status={resp.status_code}, response={resp.text[:100]}")
-        except Exception as e:
-            print(f"[发送错误] {e}")
+                data = {"receive_id": open_id, "msg_type": "text", "content": json.dumps({"text": text})}
+            requests.post(url, headers=headers, json=data, timeout=10)
+        except: pass
     threading.Thread(target=do, daemon=True).start()
+# 新增：根据得分和阶段给出反馈
+def get_feedback(score, stage_name):
+    if score >= 9:
+        return "🌟 表现优秀！话术专业、逻辑清晰。"
+    elif score >= 7:
+        return "👍 表现良好，掌握了基本技巧。"
+    elif score >= 5:
+        return "💡 表现一般，还有提升空间。"
+    else:
+        if '开场白' in stage_name:
+            return "📝 建议：开场白可以更简洁有力，快速建立信任。"
+        elif '产品介绍' in stage_name:
+            return "📝 建议：注意使用FAB法则（特性-优势-利益）。"
+        elif '异议' in stage_name:
+            return "📝 建议：先认同再回应，使用APRC法则。"
+        else:
+            return "📝 建议：多练习产品知识和话术技巧。"
+# 新增：根据总分给出最终评价
+def get_final_feedback(scores):
+    avg = sum(scores) / len(scores)
+    if avg >= 9:
+        return "🏆 优秀！你的销售话术非常专业，能够灵活应对各种场景。"
+    elif avg >= 7:
+        return "🥈 良好！你掌握了基本的销售话术技巧，但在某些环节还有提升空间。"
+    elif avg >= 5:
+        return "🥉 及格！你对产品有一定了解，但话术需要更加熟练。"
+    else:
+        return "📚 需改进！建议系统学习销售话术技巧，从基础开始逐步提升。"
 def handle_msg(text, user_id):
     text = text.strip()
-    print(f"[处理消息] text={text[:30]}")
     
     if text in ['开始练习', 'start', '开始']:
         users[user_id] = {'step': 0, 'role': None, 'scores': []}
@@ -89,39 +101,45 @@ def handle_msg(text, user_id):
     
     step = u['step']
     
+    # 计算用户得分
     user_score = 6
-    keywords = ['E2','去势率','97%','微球','辅料','副作用','疼痛','临床','Meta','妊娠率','复发率','价格','医保','安全性','样品','试用']
+    keywords = ['E2','去势率','97%','微球','辅料','副作用','疼痛','临床','Meta','妊娠率','复发率','价格','医保','安全性','样品','试用','优势','数据','效果']
     matches = sum(1 for k in keywords if k in text)
     user_score = min(6 + matches, 10)
     u['scores'].append(user_score)
     
+    # 获取当前阶段的反馈（新增）
+    current_stage = STAGES[step - 1] if step > 0 else STAGES[0]
+    feedback = get_feedback(user_score, current_stage)
+    
+    # 检查是否完成8轮（修改：第8轮用户回复后结束并显示总结）
     if step >= 8:
         avg = sum(u['scores']) / len(u['scores'])
+        final_feedback = get_final_feedback(u['scores'])
         lines = []
         for i, s in enumerate(u['scores']):
             name = STAGES[i]
             bar = '█'*(s//2) + '░'*(5-s//2)
             lines.append(f"  {i+1}. {name}: {bar} {s}/10")
         del users[user_id]
-        return f"🎉 对练完成！\n\n📊 综合评分：{avg:.1f}/10\n\n📋 各轮得分：\n" + "\n".join(lines) + "\n\n发送【开始练习】重新开始"
+        return f"🎉 对练完成！\n\n📊 综合评分：{avg:.1f}/10\n\n📋 各轮得分：\n" + "\n".join(lines) + f"\n\n💬 本轮反馈：\n{feedback}\n\n📝 总体评价：\n{final_feedback}\n\n发送【开始练习】重新开始"
     
+    # 进入下一轮（修改：增加反馈）
     u['step'] = step + 1
     doctor_text = DIALOGUE[step]
+    next_stage = STAGES[step]
     
-    return f"👨‍⚕️ 医生说：{doctor_text}\n\n📊 上轮评分：{user_score}/10\n\n🎬 第{step+1}轮：{STAGES[step]}\n💬 请回复..."
+    return f"👨‍⚕️ 医生说：{doctor_text}\n\n📊 上轮评分：{user_score}/10\n💬 反馈：{feedback}\n\n🎬 第{step+1}轮：{next_stage}\n请回复..."
 @app.route('/')
 def index():
     return jsonify({'status': 'ok', 'version': 'final-v2'})
 @app.route('/webhook/feishu', methods=['POST', 'GET'])
 def webhook():
     try:
-        print(f"[收到请求] method={request.method}")
-        
         if request.method == 'GET':
             return jsonify({'status': 'ok'})
         
         data = request.get_json() or {}
-        print(f"[请求数据] {json.dumps(data, ensure_ascii=False)[:200]}")
         
         if 'challenge' in data:
             return jsonify({'challenge': data['challenge']})
@@ -130,9 +148,6 @@ def webhook():
         event = data.get('event', {})
         event_type = header.get('event_type', '')
         
-        print(f"[事件类型] {event_type}")
-        
-        # 处理消息事件
         if event_type in ['im.message.receive_v1', 'im.message.p2p_msg']:
             message = event.get('message', {})
             sender = event.get('sender', {})
@@ -150,16 +165,12 @@ def webhook():
                 user_id = sender.get('sender_id', {}).get('open_id', '')
                 msg_id = message.get('message_id', '')
                 
-                print(f"[消息] user={user_id}, text={text[:30]}")
-                
                 if text and user_id:
                     reply = handle_msg(text, user_id)
-                    print(f"[回复] {reply[:50]}")
                     send_msg(user_id, msg_id, reply)
         
         return jsonify({'status': 'ok'})
     except Exception as e:
-        print(f"[错误] {e}")
         return jsonify({'status': 'error'}), 500
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
