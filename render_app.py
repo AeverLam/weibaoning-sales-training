@@ -2,10 +2,14 @@
 # -*- coding: utf-8 -*-
 import json, os, threading, requests
 from flask import Flask, request, jsonify
+from datetime import datetime, timedelta
 app = Flask(__name__)
 FEISHU_APP_ID = os.environ.get('FEISHU_APP_ID', 'cli_a938ac2a24391bcb')
 FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', '')
+# 内存存储 + 文件持久化
 users = {}
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
 ROLES = {
     '1': ('主任级专家', '⭐⭐⭐⭐⭐'),
     '2': ('科室主任', '⭐⭐⭐⭐'),
@@ -46,7 +50,26 @@ def send_msg(open_id, msg_id, text):
             requests.post(url, headers=headers, json=data, timeout=10)
         except: pass
     threading.Thread(target=do, daemon=True).start()
-# 新增：根据得分和阶段给出反馈
+# 新增：保存用户状态到文件
+def save_user(user_id, data):
+    try:
+        filepath = os.path.join(DATA_DIR, f'{user_id}.json')
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+    except: pass
+# 新增：从文件加载用户状态
+def load_user(user_id):
+    try:
+        filepath = os.path.join(DATA_DIR, f'{user_id}.json')
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # 检查是否过期（30分钟）
+                last_time = data.get('last_time', 0)
+                if datetime.now().timestamp() - last_time < 1800:
+                    return data
+    except: pass
+    return None
 def get_feedback(score, stage_name):
     if score >= 9:
         return "🌟 表现优秀！话术专业、逻辑清晰。"
@@ -63,7 +86,6 @@ def get_feedback(score, stage_name):
             return "📝 建议：先认同再回应，使用APRC法则。"
         else:
             return "📝 建议：多练习产品知识和话术技巧。"
-# 新增：根据总分给出最终评价
 def get_final_feedback(scores):
     avg = sum(scores) / len(scores)
     if avg >= 9:
@@ -77,16 +99,25 @@ def get_final_feedback(scores):
 def handle_msg(text, user_id):
     text = text.strip()
     
+    # 尝试从文件恢复用户状态
+    if user_id not in users:
+        loaded = load_user(user_id)
+        if loaded:
+            users[user_id] = loaded
+    
     if text in ['开始练习', 'start', '开始']:
-        users[user_id] = {'step': 0, 'role': None, 'scores': []}
+        users[user_id] = {'step': 0, 'role': None, 'scores': [], 'last_time': datetime.now().timestamp()}
+        save_user(user_id, users[user_id])
         return "👋 欢迎开始维宝宁销售话术对练！\n\n请选择医生角色（回复数字）：\n1. 主任级专家 ⭐⭐⭐⭐⭐\n2. 科室主任 ⭐⭐⭐⭐\n3. 主治医师 ⭐⭐⭐\n4. 住院医师 ⭐⭐\n5. 带组专家 ⭐⭐⭐⭐⭐"
     
     if text in ['结束', 'stop']:
-        if user_id in users: del users[user_id]
+        if user_id in users: 
+            del users[user_id]
+            save_user(user_id, {'step': -1})
         return "对练已结束。发送【开始练习】重新开始"
     
     u = users.get(user_id)
-    if not u:
+    if not u or u.get('step', -1) < 0:
         return "发送【开始练习】开始"
     
     if u['step'] == 0:
@@ -94,25 +125,25 @@ def handle_msg(text, user_id):
             role_name, stars = ROLES[text]
             u['role'] = role_name
             u['step'] = 1
-            doctor_text = DIALOGUE[0]
-            u['scores'].append(6)
-            return f"✅ 已选择：{role_name} {stars}\n\n🎬 第1轮：开场白\n\n👨‍⚕️ 医生说：{doctor_text}\n\n💬 请回复你的开场白..."
+            u['scores'] = [6]
+            u['last_time'] = datetime.now().timestamp()
+            save_user(user_id, u)
+            return f"✅ 已选择：{role_name} {stars}\n\n🎬 第1轮：开场白\n\n👨‍⚕️ 医生说：{DIALOGUE[0]}\n\n💬 请回复你的开场白..."
         return "请选择 1-5"
     
     step = u['step']
     
-    # 计算用户得分
+    # 计算得分
     user_score = 6
     keywords = ['E2','去势率','97%','微球','辅料','副作用','疼痛','临床','Meta','妊娠率','复发率','价格','医保','安全性','样品','试用','优势','数据','效果']
     matches = sum(1 for k in keywords if k in text)
     user_score = min(6 + matches, 10)
     u['scores'].append(user_score)
     
-    # 获取当前阶段的反馈（新增）
     current_stage = STAGES[step - 1] if step > 0 else STAGES[0]
     feedback = get_feedback(user_score, current_stage)
     
-    # 检查是否完成8轮（修改：第8轮用户回复后结束并显示总结）
+    # 完成8轮
     if step >= 8:
         avg = sum(u['scores']) / len(u['scores'])
         final_feedback = get_final_feedback(u['scores'])
@@ -121,33 +152,40 @@ def handle_msg(text, user_id):
             name = STAGES[i]
             bar = '█'*(s//2) + '░'*(5-s//2)
             lines.append(f"  {i+1}. {name}: {bar} {s}/10")
+        
+        result = f"🎉 对练完成！\n\n📊 综合评分：{avg:.1f}/10\n\n📋 各轮得分：\n" + "\n".join(lines) + f"\n\n💬 本轮反馈：\n{feedback}\n\n📝 总体评价：\n{final_feedback}\n\n发送【开始练习】重新开始"
+        
         del users[user_id]
-        return f"🎉 对练完成！\n\n📊 综合评分：{avg:.1f}/10\n\n📋 各轮得分：\n" + "\n".join(lines) + f"\n\n💬 本轮反馈：\n{feedback}\n\n📝 总体评价：\n{final_feedback}\n\n发送【开始练习】重新开始"
+        save_user(user_id, {'step': -1})
+        return result
     
-    # 进入下一轮（修改：增加反馈）
+    # 进入下一轮
     u['step'] = step + 1
+    u['last_time'] = datetime.now().timestamp()
+    save_user(user_id, u)
+    
     doctor_text = DIALOGUE[step]
     next_stage = STAGES[step]
     
     return f"👨‍⚕️ 医生说：{doctor_text}\n\n📊 上轮评分：{user_score}/10\n💬 反馈：{feedback}\n\n🎬 第{step+1}轮：{next_stage}\n请回复..."
 @app.route('/')
 def index():
-    return jsonify({'status': 'ok', 'version': 'final-v2'})
+    return jsonify({'status': 'ok', 'version': 'final-v3'})
 @app.route('/webhook/feishu', methods=['POST', 'GET'])
 def webhook():
     try:
         if request.method == 'GET':
             return jsonify({'status': 'ok'})
-        
+
         data = request.get_json() or {}
-        
+
         if 'challenge' in data:
             return jsonify({'challenge': data['challenge']})
-        
+
         header = data.get('header', {})
         event = data.get('event', {})
         event_type = header.get('event_type', '')
-        
+
         if event_type in ['im.message.receive_v1', 'im.message.p2p_msg']:
             message = event.get('message', {})
             sender = event.get('sender', {})
@@ -159,7 +197,6 @@ def webhook():
                 except:
                     text = str(message.get('content', '')).strip()
                 
-                # 去掉@机器人的部分
                 text = text.replace('@_user_1', '').replace('@维宝宁销售训练助手', '').strip()
                 
                 user_id = sender.get('sender_id', {}).get('open_id', '')
@@ -172,6 +209,7 @@ def webhook():
         return jsonify({'status': 'ok'})
     except Exception as e:
         return jsonify({'status': 'error'}), 500
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
