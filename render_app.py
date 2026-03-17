@@ -29,16 +29,80 @@ REFERENCES_DIR = os.path.join(os.path.dirname(__file__), 'references')
 
 # ==================== 对话状态管理 ====================
 class ConversationManager:
-    """用户对话状态管理器"""
+    """用户对话状态管理器 - 支持文件持久化"""
     
     def __init__(self):
         self.conversations: Dict[str, Dict] = {}
         self.expiry_minutes = 30
+        self.data_dir = os.path.join(os.path.dirname(__file__), 'data')
+        os.makedirs(self.data_dir, exist_ok=True)
+        self._load_all_conversations()
+    
+    def _get_file_path(self, user_id: str) -> str:
+        """获取用户对话状态的文件路径"""
+        safe_id = user_id.replace('/', '_').replace('\\', '_')
+        return os.path.join(self.data_dir, f'{safe_id}.json')
+    
+    def _load_all_conversations(self):
+        """从文件加载所有对话状态"""
+        try:
+            for filename in os.listdir(self.data_dir):
+                if filename.endswith('.json'):
+                    user_id = filename[:-5]
+                    filepath = os.path.join(self.data_dir, filename)
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        # 转换时间字符串为datetime对象
+                        if 'last_activity' in data and isinstance(data['last_activity'], str):
+                            data['last_activity'] = datetime.fromisoformat(data['last_activity'])
+                        if 'start_time' in data and isinstance(data['start_time'], str):
+                            data['start_time'] = datetime.fromisoformat(data['start_time'])
+                        self.conversations[user_id] = data
+                        print(f"[状态恢复] 已加载用户 {user_id} 的对话状态")
+        except Exception as e:
+            print(f"[状态加载错误] {e}")
+    
+    def _save_conversation(self, user_id: str):
+        """保存对话状态到文件"""
+        try:
+            filepath = self._get_file_path(user_id)
+            data = self.conversations.get(user_id, {})
+            # 转换datetime对象为字符串
+            save_data = data.copy()
+            if 'last_activity' in save_data and isinstance(save_data['last_activity'], datetime):
+                save_data['last_activity'] = save_data['last_activity'].isoformat()
+            if 'start_time' in save_data and isinstance(save_data['start_time'], datetime):
+                save_data['start_time'] = save_data['start_time'].isoformat()
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[状态保存错误] {e}")
     
     def get_conversation(self, user_id: str) -> Dict:
+        # 先从内存检查
         if user_id not in self.conversations:
-            self.conversations[user_id] = self._create_new_conversation()
+            # 尝试从文件加载
+            filepath = self._get_file_path(user_id)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        if 'last_activity' in data and isinstance(data['last_activity'], str):
+                            data['last_activity'] = datetime.fromisoformat(data['last_activity'])
+                        # 检查是否过期
+                        last_activity = data.get('last_activity')
+                        if last_activity:
+                            elapsed = datetime.now() - last_activity
+                            if elapsed > timedelta(minutes=self.expiry_minutes):
+                                data = self._create_new_conversation()
+                        self.conversations[user_id] = data
+                except Exception as e:
+                    print(f"[加载错误] {e}")
+                    self.conversations[user_id] = self._create_new_conversation()
+            else:
+                self.conversations[user_id] = self._create_new_conversation()
         else:
+            # 检查是否过期
             last_activity = self.conversations[user_id].get('last_activity')
             if last_activity:
                 elapsed = datetime.now() - last_activity
@@ -66,9 +130,11 @@ class ConversationManager:
         if user_id in self.conversations:
             self.conversations[user_id].update(updates)
             self.conversations[user_id]['last_activity'] = datetime.now()
+            self._save_conversation(user_id)
     
     def reset_conversation(self, user_id: str):
         self.conversations[user_id] = self._create_new_conversation()
+        self._save_conversation(user_id)
     
     def add_message(self, user_id: str, role: str, content: str):
         conv = self.get_conversation(user_id)
@@ -78,6 +144,7 @@ class ConversationManager:
             'timestamp': datetime.now().isoformat()
         })
         conv['last_activity'] = datetime.now()
+        self._save_conversation(user_id)
 
 conversation_mgr = ConversationManager()
 
@@ -575,11 +642,15 @@ class FeishuMessageHandler:
         conversation_mgr.add_message(user_id, 'doctor', doctor_response)
         conversation['scores'].append(score)
         
-        if round_num >= conversation.get('max_rounds', 8):
+        # 检查是否达到最大轮次
+        max_rounds = conversation.get('max_rounds', 8)
+        if round_num >= max_rounds:
             return self._generate_final_report(user_id, doctor_response)
         
         next_round = round_num + 1
         conversation['round'] = next_round
+        # 保存状态
+        conversation_mgr._save_conversation(user_id)
         
         stage = knowledge_base.get_conversation_stage(next_round)
         
