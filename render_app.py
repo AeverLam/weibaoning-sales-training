@@ -39,14 +39,25 @@ def send_msg(open_id, msg_id, text):
                 print("[错误] 无法获取token")
                 return
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            
+            # 群聊回复
             if msg_id:
                 url = f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/reply"
-                data = {"content": json.dumps({"text": text})}
+                data = {
+                    "msg_type": "text",
+                    "content": json.dumps({"text": text})
+                }
             else:
+                # 单聊发送
                 url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
-                data = {"receive_id": open_id, "msg_type": "text", "content": json.dumps({"text": text})}
+                data = {
+                    "receive_id": open_id,
+                    "msg_type": "text",
+                    "content": json.dumps({"text": text})
+                }
+            
             resp = requests.post(url, headers=headers, json=data, timeout=10)
-            print(f"[发送消息] status={resp.status_code}")
+            print(f"[发送消息] status={resp.status_code}, response={resp.text[:100]}")
         except Exception as e:
             print(f"[发送错误] {e}")
     threading.Thread(target=do, daemon=True).start()
