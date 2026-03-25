@@ -396,8 +396,12 @@ def handle_msg(text, user_id):
         
         del users[user_id]
         save_user(user_id, {'step': -1})
-        return result
-    
+        return result + "\n\n⛔ 本轮练习已结束，发送【开始练习】开始新一轮"
+
+    # 检查是否已结束
+    if u.get('step', -1) < 0:
+        return "⛔ 本轮练习已结束，发送【开始练习】开始新一轮"
+
     # 进入下一轮
     u['step'] = step + 1
     u['last_time'] = datetime.now().timestamp()
