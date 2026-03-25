@@ -7,17 +7,13 @@
 import json, os, threading, requests, random
 from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
-
 app = Flask(__name__)
-
 FEISHU_APP_ID = os.environ.get('FEISHU_APP_ID', 'cli_a938ac2a24391bcb')
 FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', '')
-
 # 内存存储 + 文件持久化
 users = {}
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
-
 # 医生角色 - 增加角色特点描述
 ROLES = {
     '1': ('主任级专家', '⭐⭐⭐⭐⭐', '对临床数据要求高，关注长期疗效和安全性证据'),
@@ -26,10 +22,8 @@ ROLES = {
     '4': ('住院医师', '⭐⭐', '正在学习内异症诊疗规范，需要基础产品知识'),
     '5': ('带组专家', '⭐⭐⭐⭐⭐', '关注手术联合药物治疗方案，重视生育力保护')
 }
-
 # 8个销售阶段 - 对应DA逻辑
 STAGES = ['开场白', '探询需求', '产品介绍', '临床数据', '竞品对比', '处理异议', '促成成交', '结束']
-
 # 医生对话库 - 基于DA内容设计，每个阶段多组备选
 DIALOGUE = {
     1: [  # 开场白
@@ -80,7 +74,6 @@ DIALOGUE = {
         "谢谢你的介绍，我们保持联系，有消息通知你。"
     ]
 }
-
 # 评分关键词 - 从DA完整提取，按重要性加权
 SCORING_KEYWORDS = {
     # 产品基础（权重1）
@@ -135,7 +128,6 @@ def get_token():
         return resp.json().get("tenant_access_token")
     except:
         return None
-
 def send_msg(open_id, msg_id, text):
     def do():
         try:
@@ -224,7 +216,7 @@ def get_feedback(score, stage_name, text):
         'high': '🌟 表现优秀！话术专业、逻辑清晰。',
         'medium': '👍 表现良好，掌握了基本技巧。',
         'low': '💡 表现一般，还有提升空间。'
-       })
+    })
     
     # 根据得分和是否提到关键数据给出反馈
     if score >= 9 or (score >= 8 and has_key_data):
@@ -268,169 +260,165 @@ def calculate_score(text, stage):
         score = 6
     
     return min(score, 10)
-
 def handle_msg(text, user_id):
- text = text.strip() 
+    text = text.strip()
+    
+    # 尝试从文件恢复用户状态
+    if user_id not in users:
+        loaded = load_user(user_id)
+        if loaded:
+            users[user_id] = loaded
+    
+    # 开始练习
+    if text in ['开始练习', 'start', '开始']:
+        users[user_id] = {
+            'step': 0,
+            'role': None,
+            'role_name': None,
+            'scores': [],
+            'last_time': datetime.now().timestamp()
+        }
+        save_user(user_id, users[user_id])
+        return """👋 欢迎开始维宝宁销售话术对练！
 
- # 尝试从文件恢复用户状态 
- if user_id not in users: 
- loaded = load_user(user_id) 
- if loaded: 
- users[user_id] = loaded 
+📋 维宝宁®（注射用醋酸曲普瑞林微球）
+        • 成分：醋酸曲普瑞林 3.75mg
+        • 适应症：子宫内膜异位症（I-IV期）- 被称为"不死的癌症"
+        • 用法：每4周肌肉注射1次，月经1-5天开始
+        • 主题：告别异痛，维守芳华
 
- # 开始练习 
- if text in ['开始练习', 'start', '开始']: 
- users[user_id] = { 
- 'step': 0,  
- 'role': None,  
- 'role_name': None, 
- 'scores': [],  
- 'last_time': datetime.now().timestamp() 
- } 
- save_user(user_id, users[user_id]) 
- return """👋 欢迎开始维宝宁销售话术对练！ 
+🎯 内异症三大难题：疼痛、复发、不孕
+        • 70-80%患者有疼痛症状
+        • 2年复发率20%，5年复发率50%
+        • 20-50%患者合并不孕
 
-📋 维宝宁®（注射用醋酸曲普瑞林微球） 
-• 成分：醋酸曲普瑞林 3.75mg 
-• 适应症：子宫内膜异位症（I-IV期）- 被称为"不死的癌症" 
-• 用法：每4周肌肉注射1次，月经1-5天开始 
-• 主题：告别异痛，维守芳华 
+请选择医生角色（回复数字）：
+1. 主任级专家 ⭐⭐⭐⭐⭐ - 对数据要求高
+2. 科室主任 ⭐⭐⭐⭐ - 关注用药规范
+3. 主治医师 ⭐⭐⭐⭐ - 关注临床操作
+4. 住院医师 ⭐⭐ - 正在学习诊疗
+5. 带组专家 ⭐⭐⭐⭐⭐ - 关注手术联合用药"""        
+    # 结束练习
+    if text in ['结束', 'stop']:
+        if user_id in users:
+            del users[user_id]
+            save_user(user_id, {'step': -1})
+        return "对练已结束。发送【开始练习】重新开始"
 
-🎯 内异症三大难题：疼痛、复发、不孕 
-• 70-80%患者有疼痛症状 
-• 2年复发率20%，5年复发率50% 
-• 20-50%患者合并不孕 
+    u = users.get(user_id)
+    if not u or u.get('step', -1) < 0:
+        return "发送【开始练习】开始"
+    # 选择角色
+    if u['step'] == 0:
+        if text in ROLES:
+            role_name, stars, desc = ROLES[text]
+            u['role'] = text
+            u['role_name'] = role_name
+            u['step'] = 1
+            u['scores'] = [6]
+            u['last_time'] = datetime.now().timestamp()
+            save_user(user_id, u)
+            
+            doctor_text = random.choice(DIALOGUE[1])
+            return f"""✅ 已选择：{role_name} {stars}
+💭 {desc}
 
-请选择医生角色（回复数字）： 
-1. 主任级专家 ⭐⭐⭐⭐⭐ - 对数据要求高 
-2. 科室主任 ⭐⭐⭐⭐ - 关注用药规范 
-3. 主治医师 ⭐⭐⭐ - 关注临床操作 
-4. 住院医师 ⭐⭐ - 正在学习诊疗 
-5. 带组专家 ⭐⭐⭐⭐⭐ - 关注手术联合用药""" 
+👨‍⚕️ 医生说："{doctor_text}"
 
- # 结束练习 
- if text in ['结束', 'stop']: 
- if user_id in users:  
- del users[user_id] 
- save_user(user_id, {'step': -1}) 
- return "对练已结束。发送【开始练习】重新开始" 
+💡 提示：快速自报家门，说明来意，控制在30秒内
+💬 请回复你的开场白..."""
+        return "请选择 1-5"
+    
+    step = u['step']
+    
+    # 计算得分
+    user_score = calculate_score(text, step)
+    u['scores'].append(user_score)
+    
+    current_stage = STAGES[step - 1] if step > 0 else STAGES[0]
+    feedback = get_feedback(user_score, current_stage, text)
+    
+    # 完成8轮 - 显示总结报告
+    if step >= 7:
+        avg = sum(u['scores']) / len(u['scores'])
+        final_feedback = get_final_feedback(u['scores'])
+        
+        # 生成得分图表
+        lines = []
+        for i, s in enumerate(u['scores']):
+            name = STAGES[i] if i < len(STAGES) else f"第{i+1}轮"
+            bar = '█' * (s // 2) + '░' * (5 - s // 2)
+            emoji = '🌟' if s >= 9 else '👍' if s >= 7 else '💡' if s >= 5 else '📝'
+            lines.append(f"{emoji} {i+1}. {name}: {bar} {s}/10")
+        
+        result = f"""🎉 对练完成！
 
- u = users.get(user_id) 
- if not u or u.get('step', -1) < 0: 
- return "发送【开始练习】开始" 
+📊 综合评分：{avg:.1f}/10
 
- # 选择角色 
- if u['step'] == 0: 
- if text in ROLES: 
- role_name, stars, desc = ROLES[text] 
- u['role'] = text 
- u['role_name'] = role_name 
- u['step'] = 1 
- u['scores'] = [6] 
- u['last_time'] = datetime.now().timestamp() 
- save_user(user_id, u) 
+📋 各轮得分：
+{chr(10).join(lines)}
 
- doctor_text = random.choice(DIALOGUE[1]) 
- return f"""✅ 已选择：{role_name} {stars} 
-💭 {desc} 
+💬 本轮反馈：
+{feedback}
 
-🎬 第1轮：开场白 
+📝 总体评价：
+{final_feedback}
 
-👨‍⚕️ 医生说："{doctor_text}" 
+---
+📚 维宝宁核心数据速记（DA重点）：
 
-💡 提示：快速自报家门，说明来意，控制在30秒内 
-💬 请回复你的开场白...""" 
- return "请选择 1-5" 
+【临床疗效】
+        • E2去势率：97.45%（vs 达菲林96.94%）
+        • 痛经缓解：99%（VAS评分）
+        • 盆腔痛缓解：75%
+        • 异位囊肿缩小：5mm（vs 达菲林2mm）
 
- step = u['step'] 
+【技术优势】
+        • 突释峰浓度：仅为达菲林1/5
+        • PLGA含量：仅为达菲林1/6
+        • 注射部位痛：1.53%（vs 达菲林4.08%）
+        • 注射部位硬结：0.51%（vs 达菲林3.06%）
 
- # 计算得分 
- user_score = calculate_score(text, step) 
- u['scores'].append(user_score) 
+【生育保护】
+        • 月经恢复：75%患者缩短12天（89天 vs 101天）
+        • 更快恢复排卵，争取受孕"黄金时间窗"
 
- current_stage = STAGES[step - 1] if step > 0 else STAGES[0] 
- feedback = get_feedback(user_score, current_stage, text) 
+【竞品对比（94项RCT Meta分析）】
+        • 有效率：77%（vs 亮丙瑞林高34.5%）
+        • 妊娠率：87.3%（vs 亮丙瑞林高48.6%）
+        • 复发率：28.5%（vs 亮丙瑞林低47.5%）
 
- # 完成8轮 - 显示总结报告 
- if step >= 7: 
- avg = sum(u['scores']) / len(u['scores']) 
- final_feedback = get_final_feedback(u['scores']) 
+【指南推荐】
+        • GnRH-a是内异症药物治疗"金标准"
+        • 2021-2025年多版指南/共识推荐
 
- # 生成得分图表 
- lines = [] 
- for i, s in enumerate(u['scores']): 
- name = STAGES[i] if i < len(STAGES) else f"第{i+1}轮" 
- bar = '█' * (s // 2) + '░' * (5 - s // 2) 
- emoji = '🌟' if s >= 9 else '👍' if s >= 7 else '💡' if s >= 5 else '📝' 
- lines.append(f"{emoji} {i+1}. {name}: {bar} {s}/10") 
-
- result = f"""🎉 对练完成！ 
-
-📊 综合评分：{avg:.1f}/10 
-
-📋 各轮得分： 
-{chr(10).join(lines)} 
-
-💬 本轮反馈： 
-{feedback} 
-
-📝 总体评价： 
-{final_feedback} 
-
---- 
-📚 维宝宁核心数据速记（DA重点）： 
-
-【临床疗效】 
-• E2去势率：97.45%（vs 达菲林96.94%） 
-• 痛经缓解：99%（VAS评分） 
-• 盆腔痛缓解：75% 
-• 异位囊肿缩小：5mm（vs 达菲林2mm） 
-
-【技术优势】 
-• 突释峰浓度：仅为达菲林1/5 
-• PLGA含量：仅为达菲林1/6 
-• 注射部位痛：1.53%（vs 达菲林4.08%） 
-• 注射部位硬结：0.51%（vs 达菲林3.06%） 
-
-【生育保护】 
-• 月经恢复：75%患者缩短12天（89天 vs 101天） 
-• 更快恢复排卵，争取受孕"黄金时间窗" 
-
-【竞品对比（94项RCT Meta分析）】 
-• 有效率：77%（vs 亮丙瑞林高34.5%） 
-• 妊娠率：87.3%（vs 亮丙瑞林高48.6%） 
-• 复发率：28.5%（vs 亮丙瑞林低47.5%） 
-
-【指南推荐】 
-• GnRH-a是内异症药物治疗"金标准" 
-• 2021-2025年多版指南/共识推荐 
-
-发送【开始练习】重新开始""" 
-
- del users[user_id] 
- save_user(user_id, {'step': -1}) 
- return result 
-
- # 进入下一轮 
- u['step'] = step + 1 
- u['last_time'] = datetime.now().timestamp() 
- save_user(user_id, u) 
-
- # 随机选择医生回复 
- doctor_text = random.choice(DIALOGUE.get(step + 1, ["继续..."])) 
- next_stage = STAGES[step] if step < len(STAGES) else "结束" 
-
- # 阶段提示 
- stage_hints = { 
- '探询需求': '💡 提示：使用SPIN提问法，了解科室用药现状和"疼痛、复发、不孕"三大痛点', 
- '产品介绍': '💡 提示：用FAB法则，强调微球制剂优势（突释1/5、PLGA 1/6、注射体验佳）', 
- '临床数据': '💡 提示：引用III期数据：97.45%去势率、99%痛经缓解、囊肿缩小5mm、月经恢复缩短12天', 
- '竞品对比': '💡 提示：对比达菲林/亮丙瑞林，突出94项RCT Meta分析、妊娠率87.3%、复发率28.5%', 
- '处理异议': '💡 提示：用APRC法则，先认同再回应，用I期药代数据（突释1/5）和注射部位数据化解', 
- '促成成交': '💡 提示：识别成交信号，主动提出样品试用、进院申请或提供III期文献', 
- '结束': '💡 提示：总结三大优势（疼痛缓解/复发控制/生育保护），感谢时间，约定跟进' 
- } 
+发送【开始练习】重新开始"""
+        
+        del users[user_id]
+        save_user(user_id, {'step': -1})
+        return result
+    
+    # 进入下一轮
+    u['step'] = step + 1
+    u['last_time'] = datetime.now().timestamp()
+    save_user(user_id, u)
+    
+    # 随机选择医生回复
+    doctor_text = random.choice(DIALOGUE.get(step + 1, ["继续..."]))
+    next_stage = STAGES[step] if step < len(STAGES) else "结束"
+    
+    # 阶段提示
+    stage_hints = {
+        '探询需求': '💡 提示：使用SPIN提问法，了解科室用药现状和"疼痛、复发、不孕"三大痛点',
+        '产品介绍': '💡 提示：用FAB法则，强调微球制剂优势（突释1/5、PLGA 1/6、注射体验佳）',
+        '临床数据': '💡 提示：引用III期数据：97.45%去势率、99%痛经缓解、囊肿缩小5mm、月经恢复缩短12天',
+        '竞品对比': '💡 提示：对比达菲林/亮丙瑞林，突出94项RCT Meta分析、妊娠率87.3%、复发率28.5%',
+        '处理异议': '💡 提示：用APRC法则，先认同再回应，用I期药代数据（突释1/5）和注射部位数据化解',
+        '促成成交': '💡 提示：识别成交信号，主动提出样品试用、进院申请或提供III期文献',
+        '结束': '💡 提示：总结三大优势（疼痛缓解/复发控制/生育保护），感谢时间，约定跟进'
+    }
     hint = stage_hints.get(next_stage, '')
+    
     return f"""👨‍⚕️ 医生说："{doctor_text}"
 
 📊 上轮评分：{user_score}/10
@@ -439,6 +427,7 @@ def handle_msg(text, user_id):
 🎬 第{step+1}轮：{next_stage}
 {hint}
 💬 请回复..."""
+
 @app.route('/')
 def index():
     return jsonify({'status': 'ok', 'version': 'weibaoning-v3-DA'})
