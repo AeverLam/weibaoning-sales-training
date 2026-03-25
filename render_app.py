@@ -208,7 +208,10 @@ def webhook():
         
         return jsonify({'status': 'ok'})
     except Exception as e:
-        return jsonify({'status': 'error'}), 500
+        import traceback
+        print(f"[ERROR] 发生错误: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
