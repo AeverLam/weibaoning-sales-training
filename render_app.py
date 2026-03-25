@@ -144,7 +144,7 @@ def handle_msg(text, user_id):
     feedback = get_feedback(user_score, current_stage)
     
     # 完成8轮
-    if step >= 8:
+    if step >= 7:
         avg = sum(u['scores']) / len(u['scores'])
         final_feedback = get_final_feedback(u['scores'])
         lines = []
