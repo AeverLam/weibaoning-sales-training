@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import json, os, threading, requests
+from flask import Flask, request, jsonify
+app = Flask(__name__)
+
+FEISHU_APP_ID = os.environ.get('FEISHU_APP_ID', 'cli_a938ac2a24391bcb')
+FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', '')
+users = {}
+
+ROLES = {
+    '1': ('主任级专家', '⭐⭐⭐⭐⭐'),
+    '2': ('科室主任', '⭐⭐⭐⭐'),
+    '3': ('主治医师', '⭐⭐⭐'),
+    '4': ('住院医师', '⭐⭐'),
+    '5': ('带组专家', '⭐⭐⭐⭐⭐')
+}
+
+DIALOGUE = [
+    "你好，有什么事吗？我一会儿还有台手术。",
+    "我们科室确实有不少内异症患者，现在主要用亮丙瑞林。你说的这个维宝宁有什么特别的？",
+    "E2去势率97.45%？这个数据不错，有III期临床数据支持吗？",
+    "网状Meta分析94项RCT？妊娠率87.3%确实比竞品高。",
+    "价格怎么样？1000元/支的支付标准，患者自付多少？",
+    "不良反应发生率确实很低，长期安全性数据怎么样？",
+    "听起来不错，要不你先放几份样品，我给几个患者试试。",
+    "今天的交流很有收获，维宝宁的数据确实令人信服。"
+]
+
+STAGES = ['开场白', '探询需求', '产品介绍', '产品介绍', '处理异议', '处理异议', '促成成交', '结束']
+
+def get_token():
+    try:
+        url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        resp = requests.post(url, json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}, timeout=10)
+        return resp.json().get("tenant_access_token")
+    except:
+        return None
+
+def send_msg(open_id, msg_id, text):
+    def do():
+        try:
+            token = get_token()
+            if not token: 
+                print("[错误] 无法获取token")
+                return
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            if msg_id:
+                url = f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/reply"
+                data = {"content": json.dumps({"text": text})}
+            else:
+                url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+                data = {"receive_id": open_id, "msg_type": "text", "content": json.dumps({"text": text})}
+            resp = requests.post(url, headers=headers, json=data, timeout=10)
+            print(f"[发送消息] status={resp.status_code}, response={resp.text[:100]}")
+        except Exception as e:
+            print(f"[发送错误] {e}")
+    threading.Thread(target=do, daemon=True).start()
+
+def handle_msg(text, user_id):
+    text = text.strip()
+    print(f"[处理消息] user={user_id}, text={text[:30]}")
+    
+    if text in ['开始练习', 'start', '开始']:
+        users[user_id] = {'step': 0, 'role': None, 'scores': []}
+        return "👋 欢迎开始维宝宁销售话术对练！\n\n请选择医生角色（回复数字）：\n1. 主任级专家 ⭐⭐⭐⭐⭐\n2. 科室主任 ⭐⭐⭐⭐\n3. 主治医师 ⭐⭐⭐\n4. 住院医师 ⭐⭐\n5. 带组专家 ⭐⭐⭐⭐⭐"
+    
+    if text in ['结束', 'stop']:
+        if user_id in users: del users[user_id]
+        return "对练已结束。发送【开始练习】重新开始"
+    
+    u = users.get(user_id)
+    if not u:
+        return "发送【开始练习】开始"
+    
+    if u['step'] == 0:
+        if text in ROLES:
+            role_name, stars = ROLES[text]
+            u['role'] = role_name
+            u['step'] = 1
+            doctor_text = DIALOGUE[0]
+            u['scores'].append(6)
+            return f"✅ 已选择：{role_name} {stars}\n\n🎬 第1轮：开场白\n\n👨‍⚕️ 医生说：{doctor_text}\n\n💬 请回复你的开场白..."
+        return "请选择 1-5"
+    
+    step = u['step']
+    
+    user_score = 6
+    keywords = ['E2','去势率','97%','微球','辅料','副作用','疼痛','临床','Meta','妊娠率','复发率','价格','医保','安全性','样品','试用']
+    matches = sum(1 for k in keywords if k in text)
+    user_score = min(6 + matches, 10)
+    u['scores'].append(user_score)
+    
+    if step >= 8:
+        avg = sum(u['scores']) / len(u['scores'])
+        lines = []
+        for i, s in enumerate(u['scores']):
+            name = STAGES[i]
+            bar = '█'*(s//2) + '░'*(5-s//2)
+            lines.append(f"  {i+1}. {name}: {bar} {s}/10")
+        del users[user_id]
+        return f"🎉 对练完成！\n\n📊 综合评分：{avg:.1f}/10\n\n📋 各轮得分：\n" + "\n".join(lines) + "\n\n发送【开始练习】重新开始"
+    
+    u['step'] = step + 1
+    doctor_text = DIALOGUE[step]
+    
+    return f"👨‍⚕️ 医生说：{doctor_text}\n\n📊 上轮评分：{user_score}/10\n\n🎬 第{step+1}轮：{STAGES[step]}\n💬 请回复..."
+
+@app.route('/')
+def index():
+    return jsonify({'status': 'ok', 'version': 'final-v2'})
+
+@app.route('/webhook/feishu', methods=['POST', 'GET'])
+def webhook():
+    try:
+        print(f"[收到请求] method={request.method}")
+        
+        if request.method == 'GET':
+            return jsonify({'status': 'ok'})
+        
+        data = request.get_json() or {}
+        print(f"[请求数据] {json.dumps(data, ensure_ascii=False)[:200]}")
+        
+        # URL验证
+        if 'challenge' in data:
+            print(f"[验证] challenge={data['challenge']}")
+            return jsonify({'challenge': data['challenge']})
+        
+        # 处理消息 - 兼容多种事件类型
+        header = data.get('header', {})
+        event = data.get('event', {})
+        event_type = header.get('event_type', '')
+        
+        print(f"[事件类型] {event_type}")
+        
+        # 处理消息事件（群聊和单聊）
+        if event_type in ['im.message.receive_v1', 'im.message.p2p_msg']:
+            message = event.get('message', {})
+            sender = event.get('sender', {})
+            
+            message_type = message.get('message_type', '')
+            
+            if message_type == 'text':
+                try:
+                    content = json.loads(message.get('content', '{}'))
+                    text = content.get('text', '').strip()
+                except:
+                    text = str(message.get('content', '')).strip()
+                
+                # 去掉@机器人的部分
+                text = text.replace('@_user_1', '').replace('@维宝宁销售训练助手', '').strip()
+                
+                user_id = sender.get('sender_id', {}).get('open_id', '')
+                msg_id = message.get('message_id', '')
+                
+                print(f"[消息] user={user_id}, text={text[:30]}")
+                
+                if text and user_id:
+                    reply = handle_msg(text, user_id)
+                    print(f"[回复] {reply[:50]}")
+                    send_msg(user_id, msg_id, reply)
+                else:
+                    print("[警告] 空消息或空用户ID")
+        else:
+            print(f"[未处理事件] {event_type}")
+        
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        print(f"[错误] {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)

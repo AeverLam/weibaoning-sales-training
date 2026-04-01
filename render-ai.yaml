@@ -1,0 +1,29 @@
+# Render 部署配置文件 - AI智能版
+# 文档: https://render.com/docs/blueprint-spec
+
+services:
+  # Web 服务 - 飞书机器人 (AI智能版)
+  - type: web
+    name: weibaoning-ai-bot
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: |
+      pip install -r requirements.txt
+    startCommand: |
+      gunicorn -c gunicorn.conf.py render_app_ai:app
+    envVars:
+      - key: FEISHU_APP_ID
+        value: cli_a938ac2a24391bcb
+      - key: FEISHU_APP_SECRET
+        sync: false  # 需要在Render控制台手动设置
+      - key: LLM_API_KEY
+        sync: false  # 需要在Render控制台手动设置LLM API密钥
+      - key: LLM_MODEL
+        value: moonshot/kimi-k2.5  # 默认使用Kimi
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: FLASK_ENV
+        value: production
+    healthCheckPath: /
+    autoDeploy: true
