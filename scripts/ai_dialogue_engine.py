@@ -110,7 +110,7 @@ class AI_DialogueEngine:
     def _call_llm(self, messages):
         """
         调用LLM API
-        支持多种模型：OpenAI、Claude、Kimi等
+        支持多种模型：OpenAI、Claude、Kimi、MiniMax等
         """
         # 获取环境变量中的API配置
         model = os.environ.get('LLM_MODEL', 'moonshot/kimi-k2.5')
@@ -125,6 +125,9 @@ class AI_DialogueEngine:
             # 尝试使用Claude API
             elif 'claude' in model:
                 return self._call_claude(messages, api_key)
+            # 尝试使用MiniMax API
+            elif 'minimax' in model.lower():
+                return self._call_minimax(messages, api_key)
             # 默认使用Kimi/Moonshot
             else:
                 return self._call_kimi(messages, api_key)
@@ -180,6 +183,48 @@ class AI_DialogueEngine:
             max_tokens=200
         )
         return response.choices[0].message.content
+    
+    def _call_minimax(self, messages, api_key):
+        """调用MiniMax API"""
+        import requests
+        
+        # MiniMax API配置
+        group_id = os.environ.get('MINIMAX_GROUP_ID', '')
+        url = f"https://api.minimax.chat/v1/text/chatcompletion_v2"
+        
+        # 提取system prompt
+        system_content = ""
+        user_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_content = msg["content"]
+            else:
+                user_messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "abab6.5-chat",
+            "messages": [
+                {"role": "system", "content": system_content}
+            ] + user_messages,
+            "temperature": 0.7,
+            "max_tokens": 200
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        result = response.json()
+        
+        if 'choices' in result and len(result['choices']) > 0:
+            return result['choices'][0]['message']['content']
+        else:
+            raise Exception(f"MiniMax API error: {result}")
     
     def _simulate_doctor_response(self, messages):
         """
