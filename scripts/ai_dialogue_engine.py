@@ -137,52 +137,62 @@ class AI_DialogueEngine:
     
     def _call_openai(self, messages, api_key):
         """调用OpenAI API"""
-        import openai
-        client = openai.OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=200
-        )
-        return response.choices[0].message.content
+        try:
+            import openai
+            client = openai.OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=200
+            )
+            return response.choices[0].message.content
+        except ImportError:
+            raise Exception("OpenAI模块未安装，请运行: pip install openai")
     
     def _call_claude(self, messages, api_key):
         """调用Claude API"""
-        import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
-        
-        # 提取system prompt
-        system_msg = ""
-        user_messages = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system_msg = msg["content"]
-            else:
-                user_messages.append(msg)
-        
-        response = client.messages.create(
-            model="claude-3-sonnet-20240229",
-            max_tokens=200,
-            system=system_msg,
-            messages=user_messages
-        )
-        return response.content[0].text
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            
+            # 提取system prompt
+            system_msg = ""
+            user_messages = []
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_msg = msg["content"]
+                else:
+                    user_messages.append(msg)
+            
+            response = client.messages.create(
+                model="claude-3-sonnet-20240229",
+                max_tokens=200,
+                system=system_msg,
+                messages=user_messages
+            )
+            return response.content[0].text
+        except ImportError:
+            raise Exception("Anthropic模块未安装，请运行: pip install anthropic")
     
     def _call_kimi(self, messages, api_key):
         """调用Kimi/Moonshot API"""
-        import openai
-        client = openai.OpenAI(
-            api_key=api_key,
-            base_url="https://api.moonshot.cn/v1"
-        )
-        response = client.chat.completions.create(
-            model="moonshot-v1-8k",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=200
-        )
-        return response.choices[0].message.content
+        try:
+            import openai
+            client = openai.OpenAI(
+                api_key=api_key,
+                base_url="https://api.moonshot.cn/v1"
+            )
+            response = client.chat.completions.create(
+                model="moonshot-v1-8k",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=200
+            )
+            return response.choices[0].message.content
+        except ImportError:
+            # 如果openai模块未安装，使用模拟回复
+            return self._simulate_doctor_response(messages)
     
     def _call_minimax(self, messages, api_key):
         """调用MiniMax API"""
