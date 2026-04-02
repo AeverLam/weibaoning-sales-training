@@ -23,4 +23,4 @@ echo "  - 工作目录: $(pwd)"
 
 # 启动 Gunicorn
 echo "🎯 启动 Gunicorn 服务..."
-exec gunicorn --config gunicorn.conf.py render_app:app
+exec gunicorn --config gunicorn.conf.py "render_app_ai:app"
