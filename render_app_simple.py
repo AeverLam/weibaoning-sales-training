@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-维宝宁销售话术对练 - AI智能版飞书机器人 (简化版)
+维宝宁销售话术对练 - AI智能版飞书机器人
+集成LLM生成医生回复、实时评估、个性化反馈
 """
 import json
 import os
 import threading
 import requests
 from flask import Flask, request, jsonify
-from datetime import datetime
+from datetime import datetime, timedelta
+
+# 导入AI对话引擎
+from scripts.ai_dialogue_engine import create_session, process_message, ai_sessions
+from scripts.start_practice import DOCTOR_PROFILES, SCENARIOS
 
 app = Flask(__name__)
 
@@ -16,7 +21,9 @@ FEISHU_APP_ID = os.environ.get('FEISHU_APP_ID', 'cli_a938ac2a24391bcb')
 FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', '')
 
 # 内存存储
-users = {}
+user_sessions = {}  # user_id -> session_id
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
 
 ROLES = {
     '1': ('主任级专家', '学术型', '⭐⭐⭐⭐⭐'),
@@ -26,63 +33,17 @@ ROLES = {
     '5': ('带组专家', '影响力型', '⭐⭐⭐⭐⭐')
 }
 
-# 医生回复模板（基于角色类型）
-DOCTOR_RESPONSES = {
-    '科室主任': [
-        "你好，有什么事吗？我一会儿还有台手术。",
-        "我们科室确实有不少内异症患者，现在主要用亮丙瑞林。你说的这个维宝宁有什么特别的？",
-        "E2去势率97.45%？这个数据不错，有III期临床数据支持吗？",
-        "网状Meta分析94项RCT？妊娠率87.3%确实比竞品高。",
-        "价格怎么样？1000元/支的支付标准，患者自付多少？",
-        "不良反应发生率确实很低，长期安全性数据怎么样？",
-        "听起来不错，要不你先放几份样品，我给几个患者试试。",
-        "今天的交流很有收获，维宝宁的数据确实令人信服。"
-    ],
-    '主任级专家': [
-        "你好，我时间有限，请长话短说。",
-        "内异症确实是我们关注的重点，你有什么新的循证医学证据？",
-        "97.45%的E2去势率？样本量多大？统计学意义如何？",
-        "网状Meta分析？发表在什么期刊上？影响因子多少？",
-        "价格不是主要问题，关键是疗效和安全性要有充分证据。",
-        "长期随访数据怎么样？有5年以上的安全性数据吗？",
-        "如果数据确实可靠，可以在我们科室试点使用。",
-        "你的专业水平不错，期待看到更多临床数据。"
-    ],
-    '主治医师': [
-        "你好，有什么事？",
-        "我们确实有不少内异症患者，现在用的药效果一般。",
-        "维宝宁？没听说过，效果怎么样？",
-        "有临床数据支持吗？其他医院用得怎么样？",
-        "价格贵不贵？患者能接受吗？",
-        "副作用大吗？患者反馈如何？",
-        "可以先试试，如果效果好我会继续用的。",
-        "今天了解了不少，谢谢你的介绍。"
-    ],
-    '住院医师': [
-        "你好，请问有什么事？",
-        "内异症？我们科室确实有不少这类患者。",
-        "维宝宁是什么药？主要适应症是什么？",
-        "用法用量是怎样的？有什么禁忌症？",
-        "价格怎么样？医保能报销吗？",
-        "不良反应有哪些？需要特别注意什么？",
-        "有学习资料吗？我想多了解一下。",
-        "谢谢你的介绍，我会向主任汇报的。"
-    ],
-    '带组专家': [
-        "你好，请简单介绍一下。",
-        "内异症是我们重点关注的领域，有什么新的进展？",
-        "维宝宁的学术价值在哪里？对学科发展有什么帮助？",
-        "有高质量的临床研究支持吗？适合在学术会议上分享吗？",
-        "价格因素需要考虑，但更重要的是学术影响力。",
-        "安全性数据怎么样？适合带教使用吗？",
-        "如果确实有价值，我可以考虑在学术会议上介绍。",
-        "你的介绍很专业，期待进一步合作。"
-    ]
+SCENARIOS_MAP = {
+    '1': '完整拜访流程',
+    '2': '价格异议处理',
+    '3': '竞品对比应对',
+    '4': '安全性质疑',
+    '5': '学术型专家拜访'
 }
 
-STAGES = ['开场白', '探询需求', '产品介绍', '产品介绍', '处理异议', '处理异议', '促成成交', '结束']
 
 def get_token():
+    """获取飞书tenant_access_token"""
     try:
         url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
         resp = requests.post(url, json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}, timeout=10)
@@ -90,11 +51,14 @@ def get_token():
     except:
         return None
 
+
 def send_msg(open_id, msg_id, text):
+    """发送消息到飞书"""
     def do():
         try:
             token = get_token()
-            if not token: return
+            if not token:
+                return
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             if msg_id:
                 url = f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/reply"
@@ -103,108 +67,329 @@ def send_msg(open_id, msg_id, text):
                 url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
                 data = {"receive_id": open_id, "msg_type": "text", "content": json.dumps({"text": text})}
             requests.post(url, headers=headers, json=data, timeout=10)
-        except: pass
+        except:
+            pass
     threading.Thread(target=do, daemon=True).start()
 
-def evaluate_response(text, stage_name):
-    """评估用户回答"""
-    score = 6
-    keywords = ['E2','去势率','97%','微球','亮丙瑞林','副作用','疼痛','临床','Meta','妊娠率','复发率','价格','医保','安全性','样品','试用','优势','数据','效果']
-    matches = sum(1 for k in keywords if k in text)
-    score = min(6 + matches, 10)
-    
-    if score >= 9:
-        feedback = "🌟 表现优秀！话术专业、逻辑清晰。"
-        grade = "A"
-    elif score >= 7:
-        feedback = "👍 表现良好，掌握了基本技巧。"
-        grade = "B"
-    elif score >= 5:
-        feedback = "💡 表现一般，还有提升空间。"
-        grade = "C"
-    else:
-        feedback = "📝 建议多练习产品知识和话术技巧。"
-        grade = "D"
-    
-    return score, grade, feedback
 
-def get_final_feedback(scores):
-    avg = sum(scores) / len(scores)
-    if avg >= 9:
-        return "🏆 优秀！你的销售话术非常专业，能够灵活应对各种场景。"
-    elif avg >= 7:
-        return "🥈 良好！你掌握了基本的销售话术技巧，但在某些环节还有提升空间。"
-    elif avg >= 5:
-        return "🥉 及格！你对产品有一定了解，但话术需要更加熟练。"
-    else:
-        return "📚 需改进！建议系统学习销售话术技巧，从基础开始逐步提升。"
+def send_card(open_id, msg_id, card_data):
+    """发送卡片消息"""
+    def do():
+        try:
+            token = get_token()
+            if not token:
+                return
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            if msg_id:
+                url = f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/reply"
+                data = {"msg_type": "interactive", "content": json.dumps(card_data)}
+            else:
+                url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+                data = {"receive_id": open_id, "msg_type": "interactive", "content": json.dumps(card_data)}
+            requests.post(url, headers=headers, json=data, timeout=10)
+        except:
+            pass
+    threading.Thread(target=do, daemon=True).start()
 
-def handle_msg(text, user_id):
+
+def format_evaluation_card(evaluation, round_num):
+    """格式化评估结果卡片"""
+    grade = evaluation.get('grade', 'C')
+    score = evaluation.get('total_score', 6)
+    feedback = evaluation.get('feedback', '')
+    
+    # 根据等级设置颜色
+    color_map = {
+        'A': 'green',
+        'B': 'blue',
+        'C': 'orange',
+        'D': 'red',
+        'F': 'red'
+    }
+    color = color_map.get(grade, 'grey')
+    
+    # 构建维度得分文本
+    dim_text = f"""产品知识: {evaluation.get('product_knowledge', 0)}/10
+话术规范: {evaluation.get('script_standard', 0)}/10
+异议处理: {evaluation.get('objection_handling', 0)}/10
+沟通礼仪: {evaluation.get('communication', 0)}/10
+专业形象: {evaluation.get('professional', 0)}/10"""
+    
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"📊 第{round_num}轮评估结果"},
+            "template": color
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**综合评分: {score}/10 (等级 {grade})**"}
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": dim_text}
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**💬 反馈:**\n{feedback}"}
+            }
+        ]
+    }
+    
+    # 添加亮点
+    strengths = evaluation.get('strengths', [])
+    if strengths:
+        strengths_text = "\n".join([f"✅ {s}" for s in strengths[:2]])
+        card["elements"].append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**🌟 亮点:**\n{strengths_text}"}
+        })
+    
+    # 添加改进点
+    weaknesses = evaluation.get('weaknesses', [])
+    if weaknesses:
+        weaknesses_text = "\n".join([f"💡 {w}" for w in weaknesses[:2]])
+        card["elements"].append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**📝 改进建议:**\n{weaknesses_text}"}
+        })
+    
+    return card
+
+
+def format_final_report_card(report):
+    """格式化最终报告卡片"""
+    overall_score = report.get('overall_score', 0)
+    grade = report.get('grade', 'C')
+    
+    color_map = {
+        'A': 'green',
+        'B': 'blue',
+        'C': 'orange',
+        'D': 'red',
+        'F': 'red'
+    }
+    color = color_map.get(grade, 'grey')
+    
+    # 维度得分
+    dim_scores = report.get('dimension_scores', {})
+    dim_text = f"""产品知识: {dim_scores.get('product_knowledge', 0):.1f}/10
+话术规范: {dim_scores.get('script_standard', 0):.1f}/10
+异议处理: {dim_scores.get('objection_handling', 0):.1f}/10
+沟通礼仪: {dim_scores.get('communication', 0):.1f}/10
+专业形象: {dim_scores.get('professional', 0):.1f}/10"""
+    
+    # 亮点
+    strengths = report.get('strengths', [])
+    strengths_text = "\n".join([f"🌟 {s}" for s in strengths[:3]]) if strengths else "继续保持！"
+    
+    # 改进点
+    weaknesses = report.get('weaknesses', [])
+    weaknesses_text = "\n".join([f"💡 {w}" for w in weaknesses[:3]]) if weaknesses else "表现不错！"
+    
+    # 学习建议
+    suggestions = report.get('suggestions', [])
+    suggestions_text = "\n".join([f"📚 {s}" for s in suggestions[:3]]) if suggestions else "继续保持！"
+    
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "🎉 对练完成！最终评估报告"},
+            "template": color
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**综合评分: {overall_score}/10 (等级 {grade})**"}
+            },
+            {
+                "tag": "hr"
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**📊 各维度得分:**\n{dim_text}"}
+            },
+            {
+                "tag": "hr"
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**🌟 亮点:**\n{strengths_text}"}
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**📝 待改进:**\n{weaknesses_text}"}
+            },
+            {
+                "tag": "hr"
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**💡 学习建议:**\n{suggestions_text}"}
+            },
+            {
+                "tag": "hr"
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**📝 总体评价:**\n{report.get('overall_feedback', '')}"}
+            },
+            {
+                "tag": "hr"
+            },
+            {
+                "tag": "note",
+                "elements": [{"tag": "plain_text", "content": "发送【开始练习】可以重新开始对练"}]
+            }
+        ]
+    }
+    
+    return card
+
+
+def handle_msg(text, user_id, msg_id=None):
+    """处理用户消息"""
     text = text.strip()
     
-    if text in ['开始练习', 'start', '开始']:
-        users[user_id] = {'step': 0, 'role': None, 'scores': [], 'role_name': None}
-        return "👋 欢迎开始维宝宁销售话术对练（AI智能版）！\n\n请选择医生角色（回复数字）：\n1️⃣ 主任级专家 ⭐⭐⭐⭐⭐\n2️⃣ 科室主任 ⭐⭐⭐⭐\n3️⃣ 主治医师 ⭐⭐⭐\n4️⃣ 住院医师 ⭐⭐\n5️⃣ 带组专家 ⭐⭐⭐⭐⭐"
+    # 开始练习
+    if text in ['开始练习', 'start', '开始', '开始对练']:
+        # 清除旧会话
+        if user_id in user_sessions:
+            old_session = user_sessions[user_id]
+            if old_session in ai_sessions:
+                del ai_sessions[old_session]
+            del user_sessions[user_id]
+        
+        return """👋 欢迎开始维宝宁销售话术对练（AI智能版）！
+
+请选择医生角色（回复数字）：
+1️⃣ 主任级专家 ⭐⭐⭐⭐⭐ - 学术型、严谨、注重证据
+2️⃣ 科室主任 ⭐⭐⭐⭐ - 管理型、务实、时间紧
+3️⃣ 主治医师 ⭐⭐⭐ - 实用型、经验导向
+4️⃣ 住院医师 ⭐⭐ - 学习型、听从上级
+5️⃣ 带组专家 ⭐⭐⭐⭐⭐ - 影响力型、决策权高
+
+💡 提示：不同医生类型有不同的关注点和提问风格，AI会根据你的回答智能调整对话。"""
     
-    if text in ['结束', 'stop']:
-        if user_id in users: del users[user_id]
+    # 结束练习
+    if text in ['结束', 'stop', '退出']:
+        if user_id in user_sessions:
+            old_session = user_sessions[user_id]
+            if old_session in ai_sessions:
+                del ai_sessions[old_session]
+            del user_sessions[user_id]
         return "对练已结束。发送【开始练习】重新开始"
     
-    u = users.get(user_id)
-    if not u or u.get('step', -1) < 0:
-        return "发送【开始练习】开始"
+    # 帮助
+    if text in ['帮助', 'help', '?']:
+        return """📖 维宝宁销售话术对练 - 使用帮助
+
+【开始练习】 - 开始新的对练
+【结束】 - 结束当前对练
+【帮助】 - 查看帮助信息
+
+**对练流程：**
+1. 选择医生角色（1-5）
+2. 选择场景（可选）
+3. AI医生会根据你的回答智能回复
+4. 每轮都会给出评分和反馈
+5. 完成8轮后生成最终报告
+
+**评分维度：**
+- 产品知识（25%）
+- 话术规范（20%）
+- 异议处理（25%）
+- 沟通礼仪（15%）
+- 专业形象（15%）
+
+💡 尽量使用专业术语和产品数据，AI会评估你的回答质量！"""
     
-    if u['step'] == 0:
-        if text in ROLES:
-            role_name, role_type, stars = ROLES[text]
-            u['role'] = text
-            u['role_name'] = role_name
-            u['step'] = 1
-            u['scores'] = []
-            
-            # 获取医生开场白
-            doctor_text = DOCTOR_RESPONSES.get(role_name, DOCTOR_RESPONSES['科室主任'])[0]
-            
-            return f"✅ 已选择：{role_name} {stars}\n类型：{role_type}\n\n🎬 第1轮：开场白\n\n👨‍⚕️ 医生说：\"{doctor_text}\"\n\n💬 请回复你的开场白..."
-        return "请选择 1-5"
+    # 检查是否有活跃会话
+    session_id = user_sessions.get(user_id)
     
-    step = u['step']
-    role_name = u.get('role_name', '科室主任')
-    
-    # 计算得分
-    current_stage = STAGES[step - 1] if step > 0 else STAGES[0]
-    score, grade, feedback = evaluate_response(text, current_stage)
-    u['scores'].append(score)
-    
-    # 完成8轮
-    if step >= 8:
-        avg = sum(u['scores']) / len(u['scores'])
-        final_feedback = get_final_feedback(u['scores'])
+    # 选择医生角色
+    if text in ROLES and (not session_id or session_id not in ai_sessions):
+        role_name, role_type, stars = ROLES[text]
         
-        lines = []
-        for i, s in enumerate(u['scores']):
-            name = STAGES[i]
-            bar = '█'*(s//2) + '░'*(5-s//2)
-            lines.append(f"  {i+1}. {name}: {bar} {s}/10")
+        # 创建AI会话
+        scenario = '完整拜访流程'  # 默认场景
+        session_id, engine = create_session(user_id, role_name, scenario)
+        user_sessions[user_id] = session_id
         
-        result = f"🎉 对练完成！\n\n📊 综合评分：{avg:.1f}/10\n\n📋 各轮得分：\n" + "\n".join(lines) + f"\n\n💬 本轮反馈：\n{feedback}\n\n📝 总体评价：\n{final_feedback}\n\n发送【开始练习】重新开始"
+        # 获取医生开场白
+        doctor_opening = engine.get_doctor_response("你好，我是丽珠医药的代表，想跟您介绍一下我们的新产品。")
         
-        del users[user_id]
-        return result
+        return f"""✅ 已选择：{role_name} {stars}
+类型：{role_type}
+难度：{stars}
+
+🎬 对练开始！
+
+👨‍⚕️ **医生说：**
+{doctor_opening}
+
+💬 **请回复你的开场白...**
+
+---
+💡 提示：这是第1轮（共8轮），AI会根据你的回答智能调整后续对话。"""
     
-    # 进入下一轮
-    u['step'] = step + 1
+    # 如果没有活跃会话
+    if not session_id or session_id not in ai_sessions:
+        return "发送【开始练习】开始新的对练，或发送【帮助】查看使用说明"
     
-    # 获取医生回复
-    doctor_responses = DOCTOR_RESPONSES.get(role_name, DOCTOR_RESPONSES['科室主任'])
-    doctor_text = doctor_responses[min(step, len(doctor_responses) - 1)]
-    next_stage = STAGES[step]
+    # 处理用户回答
+    result = process_message(session_id, text)
     
-    return f"👨‍⚕️ 医生说：\"{doctor_text}\"\n\n📊 上轮评分：{score}/10 (等级{grade})\n💬 反馈：{feedback}\n\n🎬 第{step+1}轮：{next_stage}\n请回复..."
+    if 'error' in result:
+        return f"出错了：{result['error']}"
+    
+    # 获取评估结果
+    evaluation = result['evaluation']
+    doctor_response = result['doctor_response']
+    round_num = result['round']
+    
+    # 构建回复
+    reply_text = f"""👨‍⚕️ **医生说：**
+{doctor_response}
+
+---
+📊 **第{round_num}轮评分：{evaluation['total_score']}/10（等级{evaluation['grade']}）**
+💬 **反馈：** {evaluation['feedback']}"""
+    
+    # 如果不是最后一轮，提示下一轮
+    if not result.get('is_complete'):
+        reply_text += f"""
+
+💬 **请回复第{round_num + 1}轮...**
+（还剩{8 - round_num}轮）"""
+        return reply_text
+    else:
+        # 对练完成，返回最终报告
+        final_report = result['final_report']
+        
+        # 发送卡片形式的最终报告
+        card_data = format_final_report_card(final_report)
+        
+        # 清理会话
+        del user_sessions[user_id]
+        
+        # 返回文本摘要 + 卡片
+        summary = f"""🎉 对练完成！
+
+📊 **综合评分：{final_report['overall_score']}/10（等级{final_report['grade']}）**
+
+{final_report['overall_feedback']}
+
+详细报告已生成，请查看下方卡片..."""
+        
+        return summary, card_data
+
 
 @app.route('/')
 def index():
-    return jsonify({'status': 'ok', 'version': 'ai-simple-v1.0'})
+    return jsonify({'status': 'ok', 'version': 'ai-v1.0', 'features': ['AI智能对话', '实时评估', '个性化反馈']})
+
 
 @app.route('/webhook/feishu', methods=['POST', 'GET'])
 def webhook():
@@ -214,6 +399,7 @@ def webhook():
         
         data = request.get_json() or {}
         
+        # 处理挑战验证
         if 'challenge' in data:
             return jsonify({'challenge': data['challenge']})
         
@@ -232,14 +418,22 @@ def webhook():
                 except:
                     text = str(message.get('content', '')).strip()
                 
+                # 清理@机器人的内容
                 text = text.replace('@_user_1', '').replace('@维宝宁销售训练助手', '').strip()
                 
                 user_id = sender.get('sender_id', {}).get('open_id', '')
                 msg_id = message.get('message_id', '')
                 
                 if text and user_id:
-                    reply = handle_msg(text, user_id)
-                    send_msg(user_id, msg_id, reply)
+                    reply = handle_msg(text, user_id, msg_id)
+                    
+                    # 如果返回的是元组（文本+卡片）
+                    if isinstance(reply, tuple):
+                        text_reply, card_data = reply
+                        send_msg(user_id, msg_id, text_reply)
+                        send_card(user_id, msg_id, card_data)
+                    else:
+                        send_msg(user_id, msg_id, reply)
         
         return jsonify({'status': 'ok'})
     except Exception as e:
@@ -247,6 +441,75 @@ def webhook():
         print(f"Error: {e}")
         print(traceback.format_exc())
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/practice/start', methods=['POST'])
+def api_start_practice():
+    """API：开始对练"""
+    data = request.get_json() or {}
+    user_id = data.get('user_id', 'anonymous')
+    doctor_type = data.get('doctor_type', '科室主任')
+    scenario = data.get('scenario', '完整拜访流程')
+    style_tags = data.get('style_tags', [])
+    
+    session_id, engine = create_session(user_id, doctor_type, scenario, style_tags)
+    user_sessions[user_id] = session_id
+    
+    # 获取医生开场白
+    doctor_opening = engine.get_doctor_response("你好，我是丽珠医药的代表。")
+    
+    return jsonify({
+        'status': 'ok',
+        'session_id': session_id,
+        'doctor_type': doctor_type,
+        'scenario': scenario,
+        'doctor_opening': doctor_opening,
+        'round': 1,
+        'total_rounds': 8
+    })
+
+
+@app.route('/api/practice/message', methods=['POST'])
+def api_send_message():
+    """API：发送消息"""
+    data = request.get_json() or {}
+    session_id = data.get('session_id')
+    user_message = data.get('message', '')
+    
+    if not session_id:
+        return jsonify({'status': 'error', 'message': '缺少session_id'}), 400
+    
+    result = process_message(session_id, user_message)
+    
+    if 'error' in result:
+        return jsonify({'status': 'error', 'message': result['error']}), 400
+    
+    response = {
+        'status': 'ok',
+        'doctor_response': result['doctor_response'],
+        'evaluation': result['evaluation'],
+        'round': result['round'],
+        'is_complete': result['is_complete']
+    }
+    
+    if result.get('final_report'):
+        response['final_report'] = result['final_report']
+    
+    return jsonify(response)
+
+
+@app.route('/api/practice/report/<session_id>', methods=['GET'])
+def api_get_report(session_id):
+    """API：获取报告"""
+    from scripts.ai_dialogue_engine import get_session
+    
+    engine = get_session(session_id)
+    if not engine:
+        return jsonify({'status': 'error', 'message': '会话不存在'}), 404
+    
+    report = engine.generate_final_report()
+    return jsonify({'status': 'ok', 'report': report})
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
