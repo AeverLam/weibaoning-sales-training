@@ -232,8 +232,15 @@ def handle_msg(text, user_id, msg_id=None):
         scenario = '完整拜访流程'  # 默认场景
         session_id, engine = create_session(user_id, role_name, scenario)
         
-        # 获取医生开场白
-        doctor_opening = engine.get_doctor_response("你好，我是丽珠医药的代表，想跟您介绍一下我们的新产品。")
+        # 医生开场白（固定，不通过AI生成）
+        doctor_openings = {
+            '主任级专家': '你好，请问有什么事吗？我时间比较紧，请长话短说。',
+            '科室主任': '你好，我是主任。有什么可以帮你的？',
+            '主治医师': '你好，请问有什么事吗？',
+            '住院医师': '你好，请问有什么事吗？',
+            '带组专家': '你好，请问有什么事吗？'
+        }
+        doctor_opening = doctor_openings.get(role_name, '你好，请问有什么事吗？')
         
         return f"""✅ 已选择：{role_name} {stars}
 类型：{role_type}
