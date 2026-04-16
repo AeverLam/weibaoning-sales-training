@@ -37,6 +37,7 @@ def get_token():
     except:
         return None
 
+
 def send_msg(open_id, msg_id, text):
     def do():
         try:
@@ -53,21 +54,22 @@ def send_msg(open_id, msg_id, text):
         except: pass
     threading.Thread(target=do, daemon=True).start()
 
+
 def handle_msg(text, user_id):
     text = text.strip()
-    
+
     if text in ['开始练习', 'start', '开始']:
         users[user_id] = {'step': 0, 'role': None, 'scores': []}
         return "👋 欢迎开始维宝宁销售话术对练！\n\n请选择医生角色（回复数字）：\n1. 主任级专家 ⭐⭐⭐⭐⭐\n2. 科室主任 ⭐⭐⭐⭐\n3. 主治医师 ⭐⭐⭐\n4. 住院医师 ⭐⭐\n5. 带组专家 ⭐⭐⭐⭐⭐"
-    
+
     if text in ['结束', 'stop']:
         if user_id in users: del users[user_id]
         return "对练已结束。发送【开始练习】重新开始"
-    
+
     u = users.get(user_id)
     if not u:
         return "发送【开始练习】开始"
-    
+
     if u['step'] == 0:
         if text in ROLES:
             role_name, stars = ROLES[text]
@@ -100,6 +102,7 @@ def handle_msg(text, user_id):
     doctor_text = DIALOGUE[step]
     
     return f"👨‍⚕️ 医生说：{doctor_text}\n\n📊 上轮评分：{user_score}/10\n\n🎬 第{step+1}轮：{STAGES[step]}\n💬 请回复..."
+
 
 @app.route('/')
 def index():
