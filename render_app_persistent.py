@@ -309,6 +309,7 @@ def health():
 
 
 @app.route('/webhook/feishu', methods=['POST', 'GET'])
+@app.route('/api/feishu/chat', methods=['POST', 'GET'])  # 兼容旧版webhook地址
 def webhook():
     try:
         if request.method == 'GET':
