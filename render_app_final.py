@@ -28,6 +28,7 @@ FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 # 数据存储目录
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 SESSIONS_DIR = os.path.join(DATA_DIR, 'sessions')
+PROCESSED_MSG_FILE = os.path.join(DATA_DIR, 'processed_messages.json')
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 # 内存缓存（启动时从文件加载）
@@ -35,6 +36,49 @@ sessions = {}  # session_id -> session_data
 user_progress = {}  # user_id -> progress_data
 user_sessions = {}  # feishu_user_id -> session_id 或 "selecting_doctor"
 processed_messages = set()  # 已处理的消息ID，用于去重
+_sent_messages_cache = {}  # 发送消息去重缓存 {user_id: {content_hash: timestamp}}
+
+# ============ 消息去重持久化 ============
+def load_processed_messages():
+    """加载已处理的消息ID"""
+    global processed_messages
+    if os.path.exists(PROCESSED_MSG_FILE):
+        try:
+            with open(PROCESSED_MSG_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # 只保留最近24小时的消息ID
+                cutoff_time = time.time() - 86400
+                processed_messages = set(
+                    msg_id for msg_id, timestamp in data.items()
+                    if timestamp > cutoff_time
+                )
+                print(f"Loaded {len(processed_messages)} processed messages")
+        except Exception as e:
+            print(f"Error loading processed messages: {e}")
+            processed_messages = set()
+
+def save_processed_message(message_id):
+    """保存已处理的消息ID"""
+    try:
+        data = {}
+        if os.path.exists(PROCESSED_MSG_FILE):
+            with open(PROCESSED_MSG_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        
+        # 清理24小时前的记录
+        cutoff_time = time.time() - 86400
+        data = {k: v for k, v in data.items() if v > cutoff_time}
+        
+        # 添加新记录
+        data[message_id] = time.time()
+        
+        with open(PROCESSED_MSG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving processed message: {e}")
+
+# 启动时加载已处理的消息
+load_processed_messages()
 
 # ============ 持久化函数 ============
 def save_session_to_file(session_id, session_data):
@@ -414,9 +458,34 @@ def generate_summary(session_data):
     
     return summary
 
+_recent_sent_messages = {}  # 最近发送的消息缓存 {user_id: [(content_hash, timestamp), ...]}
+
 def send_feishu_message(open_id, user_id, reply_text):
     """发送飞书消息（独立函数，用于后台线程）"""
+    global _recent_sent_messages
+    
     try:
+        # 检查是否重复发送（60秒内相同内容不重复发送）
+        content_hash = hash(reply_text[:200])
+        current_time = time.time()
+        
+        if user_id not in _recent_sent_messages:
+            _recent_sent_messages[user_id] = []
+        
+        # 清理60秒前的记录
+        _recent_sent_messages[user_id] = [
+            (h, t) for h, t in _recent_sent_messages[user_id]
+            if current_time - t < 60
+        ]
+        
+        # 检查是否重复
+        for h, t in _recent_sent_messages[user_id]:
+            if h == content_hash and (current_time - t) < 60:
+                print(f"Duplicate send detected for user {user_id}, skipping")
+                return
+        
+        # 记录本次发送
+        _recent_sent_messages[user_id].append((content_hash, current_time))
         # 获取 tenant_access_token
         token_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
         token_resp = requests.post(
@@ -468,15 +537,31 @@ def send_feishu_message(open_id, user_id, reply_text):
 
 def process_message_async(open_id, user_id, text, message_id):
     """异步处理消息"""
-    # 检查消息是否已处理
+    # 检查消息是否已处理（内存+文件双重检查）
     if message_id in processed_messages:
-        print(f"Message {message_id} already processed, skip")
+        print(f"Message {message_id} already processed (memory), skip")
         return
     
+    # 保存到文件（持久化去重）
+    save_processed_message(message_id)
     processed_messages.add(message_id)
     
     # 生成回复
     reply_text = generate_reply(open_id, user_id, text)
+    
+    # 检查是否重复发送（内容去重）
+    content_hash = hash(f"{user_id}:{reply_text[:100]}")
+    current_time = time.time()
+    
+    if user_id in _sent_messages_cache:
+        last_sent = _sent_messages_cache[user_id].get(content_hash)
+        if last_sent and (current_time - last_sent) < 30:  # 30秒内不重复发送相同内容
+            print(f"Duplicate content detected for user {user_id}, skip sending")
+            return
+    else:
+        _sent_messages_cache[user_id] = {}
+    
+    _sent_messages_cache[user_id][content_hash] = current_time
     
     # 发送消息
     send_feishu_message(open_id, user_id, reply_text)
@@ -658,17 +743,34 @@ def feishu_chat():
     print(f"User: {user_id}")
     print(f"Text: {text}")
     
-    # 检查消息是否已处理
+    # 检查消息是否已处理（内存+文件双重检查）
     if message_id in processed_messages:
-        print(f"Message {message_id} already processed, return 200 immediately")
+        print(f"Message {message_id} already processed (memory), return 200 immediately")
         return jsonify({"code": 0, "msg": "success"})
     
+    # 检查文件中的记录（防止服务重启后重复处理）
+    if os.path.exists(PROCESSED_MSG_FILE):
+        try:
+            with open(PROCESSED_MSG_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if message_id in data:
+                    print(f"Message {message_id} already processed (file), return 200 immediately")
+                    processed_messages.add(message_id)  # 添加到内存缓存
+                    return jsonify({"code": 0, "msg": "success"})
+        except:
+            pass
+    
     # 立即返回200，防止飞书重试
-    # 启动后台线程处理消息
-    thread = threading.Thread(
-        target=process_message_async,
-        args=(open_id, user_id, text, message_id)
-    )
+    # 启动后台线程处理消息（带异常保护）
+    def safe_process():
+        try:
+            process_message_async(open_id, user_id, text, message_id)
+        except Exception as e:
+            print(f"Error in process_message_async: {e}")
+            import traceback
+            print(traceback.format_exc())
+    
+    thread = threading.Thread(target=safe_process)
     thread.daemon = True
     thread.start()
     

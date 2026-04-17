@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-维宝宁销售话术对练 - AI智能对话引擎
-使用LLM生成医生回复、实时评估、个性化反馈
+维宝宁销售话术对练 - AI智能对话引擎（修复版）
+使用LLM生成医生回复、实时评估、智能追问、个性化反馈
 """
 
 import json
@@ -28,6 +28,8 @@ class AI_DialogueEngine:
         self.round = 1
         self.messages = []
         self.scores = []
+        self.follow_up_count = 0  # 当前轮追问次数
+        self.max_follow_up = 3    # 最多追问3次
         
         # 获取医生档案
         self.profile = DOCTOR_PROFILES.get(doctor_type, DOCTOR_PROFILES["科室主任"])
@@ -81,9 +83,7 @@ class AI_DialogueEngine:
         return prompt
     
     def get_doctor_response(self, user_message):
-        """
-        使用LLM生成医生回复
-        """
+        """使用LLM生成医生回复"""
         # 构建对话历史
         conversation_history = []
         for msg in self.messages:
@@ -108,99 +108,24 @@ class AI_DialogueEngine:
             return self._get_fallback_response()
     
     def _call_llm(self, messages):
-        """
-        调用LLM API
-        支持多种模型：OpenAI、Claude、Kimi、MiniMax等
-        """
+        """调用LLM API"""
         # 获取环境变量中的API配置
-        model = os.environ.get('LLM_MODEL', 'moonshot/kimi-k2.5')
-        api_key = os.environ.get('LLM_API_KEY', '')
+        model = os.environ.get('LLM_MODEL', 'minimax/abab6.5-chat')
+        api_key = os.environ.get('MINIMAX_API_KEY', '')
         
-        # 这里使用OpenClaw的模型调用方式
-        # 实际部署时可以通过环境变量配置
         try:
-            # 尝试使用OpenAI API
-            if 'openai' in model or 'gpt' in model:
-                return self._call_openai(messages, api_key)
-            # 尝试使用Claude API
-            elif 'claude' in model:
-                return self._call_claude(messages, api_key)
-            # 尝试使用MiniMax API
-            elif 'minimax' in model.lower():
+            if 'minimax' in model.lower():
                 return self._call_minimax(messages, api_key)
-            # 默认使用Kimi/Moonshot
             else:
-                return self._call_kimi(messages, api_key)
+                return self._call_minimax(messages, api_key)  # 默认使用MiniMax
         except Exception as e:
-            # 如果API调用失败，返回模拟回复
-            return self._simulate_doctor_response(messages)
-    
-    def _call_openai(self, messages, api_key):
-        """调用OpenAI API"""
-        try:
-            import openai
-            client = openai.OpenAI(api_key=api_key)
-            response = client.chat.completions.create(
-                model="gpt-4",
-                messages=messages,
-                temperature=0.7,
-                max_tokens=200
-            )
-            return response.choices[0].message.content
-        except ImportError:
-            raise Exception("OpenAI模块未安装，请运行: pip install openai")
-    
-    def _call_claude(self, messages, api_key):
-        """调用Claude API"""
-        try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=api_key)
-            
-            # 提取system prompt
-            system_msg = ""
-            user_messages = []
-            for msg in messages:
-                if msg["role"] == "system":
-                    system_msg = msg["content"]
-                else:
-                    user_messages.append(msg)
-            
-            response = client.messages.create(
-                model="claude-3-sonnet-20240229",
-                max_tokens=200,
-                system=system_msg,
-                messages=user_messages
-            )
-            return response.content[0].text
-        except ImportError:
-            raise Exception("Anthropic模块未安装，请运行: pip install anthropic")
-    
-    def _call_kimi(self, messages, api_key):
-        """调用Kimi/Moonshot API"""
-        try:
-            import openai
-            client = openai.OpenAI(
-                api_key=api_key,
-                base_url="https://api.moonshot.cn/v1"
-            )
-            response = client.chat.completions.create(
-                model="moonshot-v1-8k",
-                messages=messages,
-                temperature=0.7,
-                max_tokens=200
-            )
-            return response.choices[0].message.content
-        except ImportError:
-            # 如果openai模块未安装，使用模拟回复
             return self._simulate_doctor_response(messages)
     
     def _call_minimax(self, messages, api_key):
         """调用MiniMax API"""
         import requests
         
-        # MiniMax API配置
-        group_id = os.environ.get('MINIMAX_GROUP_ID', '')
-        url = f"https://api.minimax.chat/v1/text/chatcompletion_v2"
+        url = "https://api.minimax.chat/v1/text/chatcompletion_v2"
         
         # 提取system prompt
         system_content = ""
@@ -237,10 +162,7 @@ class AI_DialogueEngine:
             raise Exception(f"MiniMax API error: {result}")
     
     def _simulate_doctor_response(self, messages):
-        """
-        模拟医生回复（当API不可用时使用）
-        基于角色特征和对话上下文生成合理回复
-        """
+        """模拟医生回复（当API不可用时使用）"""
         user_msg = messages[-1]["content"] if messages else ""
         
         # 根据医生类型和轮数生成回复
@@ -294,6 +216,7 @@ class AI_DialogueEngine:
     def evaluate_response(self, user_message, doctor_context):
         """
         使用LLM实时评估用户回答质量
+        新评分标准：每轮10分制
         """
         eval_prompt = f"""你是一位销售培训专家，正在评估医药代表的回答质量。
 
@@ -307,28 +230,33 @@ class AI_DialogueEngine:
 **医药代表的回答**：
 {user_message}
 
-**评估维度**（每项0-10分）：
-1. 产品知识：是否准确传递了产品信息
-2. 话术规范：是否使用了FAB、SPIN等技巧
-3. 异议处理：是否有效回应了医生的顾虑
-4. 沟通礼仪：称呼、语气是否得体
-5. 专业形象：术语使用、自信度
+**评估维度**（总分10分）：
+1. 内容准确性（0-3分）：信息是否正确、专业，数据是否准确
+2. 表达清晰度（0-2分）：逻辑是否清晰、易懂，结构是否合理
+3. 客户需求匹配（0-2分）：是否回应了医生的关切和问题
+4. 专业度（0-2分）：是否体现专业素养，术语使用是否得当
+5. 加分项（0-1分）：是否有超出预期的亮点
 
 **评分标准**：
-- 9-10分：优秀，可以作为标杆
-- 7-8分：良好，小有瑕疵
-- 5-6分：合格，需要改进
-- 0-4分：待提升，明显不足
+- 9-10分：优秀
+- 7-8分：良好
+- 5-6分：合格
+- 0-4分：待提升
+
+**追问判断**：
+如果回答得分低于6分或过于简短（少于20字），应该追问。追问时保持医生角色，用疑问句引导对方补充信息。
 
 请输出JSON格式：
 {{
-  "product_knowledge": 分数,
-  "script_standard": 分数,
-  "objection_handling": 分数,
-  "communication": 分数,
-  "professional": 分数,
+  "content_accuracy": 分数,
+  "expression_clarity": 分数,
+  "customer_match": 分数,
+  "professionalism": 分数,
+  "bonus": 分数,
   "total_score": 总分,
   "grade": "等级(A/B/C/D/F)",
+  "need_follow_up": true/false,
+  "follow_up_question": "如果需要追问，写出追问内容",
   "strengths": ["亮点1", "亮点2"],
   "weaknesses": ["改进点1", "改进点2"],
   "feedback": "个性化反馈建议"
@@ -344,7 +272,6 @@ class AI_DialogueEngine:
             eval_result = self._call_llm(eval_messages)
             
             # 解析JSON结果
-            # 尝试从回复中提取JSON
             import re
             json_match = re.search(r'\{.*\}', eval_result, re.DOTALL)
             if json_match:
@@ -359,74 +286,84 @@ class AI_DialogueEngine:
             return self._rule_based_evaluation(user_message)
     
     def _rule_based_evaluation(self, user_message):
-        """
-        基于规则的评分（当LLM不可用时使用）
-        """
-        score = 6  # 基础分
+        """基于规则的评分（当LLM不可用时使用）"""
+        score = 5  # 基础分
+        need_follow_up = False
+        follow_up_question = ""
+        
+        # 字数检查
+        if len(user_message) < 20:
+            score = 2
+            need_follow_up = True
+            follow_up_question = "能详细说说吗？我想了解更多细节。"
+        elif len(user_message) < 50:
+            score = 4
+            need_follow_up = True
+            follow_up_question = "还有吗？我想听听更具体的介绍。"
         
         # 关键词匹配加分
-        keywords = {
-            'product_knowledge': ['E2', '去势率', '97%', '微球', '亮丙瑞林', '子宫内膜异位症', '妊娠率', '87.3%'],
-            'script_standard': ['优势', '特点', '效果', '数据', '临床'],
-            'objection_handling': ['理解', '确实', '但是', '不过', '其实'],
-            'communication': ['您', '主任', '教授', '打扰', '感谢'],
-            'professional': ['适应症', '禁忌症', '不良反应', '用法用量']
-        }
-        
-        strengths = []
-        weaknesses = []
-        
-        for dimension, words in keywords.items():
-            matches = sum(1 for w in words if w in user_message)
-            if matches >= 2:
-                score += 1
-                if dimension == 'product_knowledge':
-                    strengths.append("产品知识掌握扎实")
-                elif dimension == 'script_standard':
-                    strengths.append("话术运用得当")
-                elif dimension == 'objection_handling':
-                    strengths.append("异议处理技巧良好")
-                elif dimension == 'communication':
-                    strengths.append("沟通礼仪得体")
-                elif dimension == 'professional':
-                    strengths.append("专业形象良好")
+        keywords = ['E2', '去势率', '97%', '微球', '亮丙瑞林', '子宫内膜异位症', '妊娠率', '87.3%']
+        matches = sum(1 for w in keywords if w in user_message)
+        if matches >= 2:
+            score += 2
+        elif matches >= 1:
+            score += 1
         
         # 限制最高分
         score = min(score, 10)
         
         # 生成反馈
         if score >= 9:
-            feedback = "🌟 表现优秀！话术专业、逻辑清晰，充分展示了产品价值。"
+            feedback = "🌟 表现优秀！话术专业、逻辑清晰。"
             grade = "A"
         elif score >= 7:
-            feedback = "👍 表现良好，掌握了基本技巧，但在某些细节上可以更精进。"
+            feedback = "👍 表现良好，掌握了基本技巧。"
             grade = "B"
         elif score >= 5:
-            feedback = "💡 表现一般，建议加强对产品知识和话术技巧的学习。"
+            feedback = "💡 表现一般，建议加强学习。"
             grade = "C"
+            if not need_follow_up:
+                need_follow_up = True
+                follow_up_question = "能再具体说说吗？"
         else:
-            feedback = "📝 需要改进！建议系统学习销售话术，从基础开始逐步提升。"
+            feedback = "📝 需要改进！建议系统学习。"
             grade = "D"
-        
-        if not strengths:
-            weaknesses.append("建议多使用产品关键数据")
+            if not need_follow_up:
+                need_follow_up = True
+                follow_up_question = "我不太明白你的意思，能再解释一下吗？"
         
         return {
-            "product_knowledge": min(score, 10),
-            "script_standard": min(score - 1, 10),
-            "objection_handling": min(score - 1, 10),
-            "communication": min(score, 10),
-            "professional": min(score - 1, 10),
+            "content_accuracy": min(score * 0.3, 3),
+            "expression_clarity": min(score * 0.2, 2),
+            "customer_match": min(score * 0.2, 2),
+            "professionalism": min(score * 0.2, 2),
+            "bonus": 1 if score >= 8 else 0,
             "total_score": score,
             "grade": grade,
-            "strengths": strengths if strengths else ["态度积极"],
-            "weaknesses": weaknesses if weaknesses else ["可以更加自信"],
+            "need_follow_up": need_follow_up,
+            "follow_up_question": follow_up_question,
+            "strengths": ["态度积极"] if score >= 5 else [],
+            "weaknesses": ["可以更加详细"] if score < 7 else [],
             "feedback": feedback
         }
     
+    def get_transition_message(self, current_round, next_round_focus):
+        """生成自然过渡语"""
+        transitions = {
+            1: "好的，了解了。那我想问问，这个产品具体是怎么发挥作用的呢？",
+            2: "明白了。那在临床使用上，你们有什么数据支持吗？",
+            3: "嗯，数据听起来不错。不过我想了解一下安全性方面的情况。",
+            4: "安全性我了解了。那具体怎么使用？剂量和疗程是怎样的？",
+            5: "用法我清楚了。说实话，我对价格还是有点顾虑...",
+            6: "价格我能接受。但我还是有点担心长期使用的风险。",
+            7: "好的，我明白了。那最后我想确认一下，如果我想试用，后续怎么跟进？",
+        }
+        
+        return transitions.get(current_round, f"好的，我们继续。接下来聊聊{next_round_focus}。")
+    
     def process_turn(self, user_message):
         """
-        处理一轮对话
+        处理一轮对话（支持智能追问）
         """
         # 1. 记录用户消息
         self.messages.append({
@@ -442,7 +379,32 @@ class AI_DialogueEngine:
         # 3. 评估用户回答
         evaluation = self.evaluate_response(user_message, doctor_response)
         
-        # 4. 记录医生回复
+        # 4. 检查是否需要追问
+        need_follow_up = evaluation.get('need_follow_up', False)
+        follow_up_question = evaluation.get('follow_up_question', '')
+        
+        if need_follow_up and self.follow_up_count < self.max_follow_up and evaluation.get('total_score', 0) < 6:
+            # 需要追问
+            self.follow_up_count += 1
+            
+            # 记录追问
+            self.messages.append({
+                "role": "doctor",
+                "content": follow_up_question,
+                "round": self.round,
+                "is_follow_up": True,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            return {
+                "doctor_response": follow_up_question,
+                "evaluation": None,  # 追问时不显示评分
+                "round": self.round,
+                "is_follow_up": True,
+                "is_complete": False
+            }
+        
+        # 5. 记录医生正式回复
         self.messages.append({
             "role": "doctor",
             "content": doctor_response,
@@ -450,23 +412,46 @@ class AI_DialogueEngine:
             "timestamp": datetime.now().isoformat()
         })
         
-        # 5. 记录评分
+        # 6. 记录评分
         self.scores.append(evaluation)
         
-        # 6. 增加轮数
+        # 7. 重置追问计数
+        self.follow_up_count = 0
+        
+        # 8. 生成自然过渡语（如果不是最后一轮）
+        transition = None
+        if self.round < 8:
+            next_focus = self._get_next_round_focus(self.round + 1)
+            transition = self.get_transition_message(self.round, next_focus)
+        
+        # 9. 增加轮数
+        current_round = self.round
         self.round += 1
         
         return {
             "doctor_response": doctor_response,
             "evaluation": evaluation,
-            "round": self.round - 1,
+            "transition": transition,
+            "round": current_round,
+            "is_follow_up": False,
             "is_complete": self.round > 8
         }
     
+    def _get_next_round_focus(self, round_num):
+        """获取下一轮的关注点"""
+        focuses = {
+            2: "产品引入",
+            3: "作用机制",
+            4: "临床证据",
+            5: "安全性讨论",
+            6: "用法用量",
+            7: "处理异议",
+            8: "缔结与跟进"
+        }
+        return focuses.get(round_num, "继续讨论")
+    
     def generate_final_report(self):
-        """
-        生成最终总结报告
-        """
+        """生成最终总结报告"""
         if not self.scores:
             return {"error": "还没有评分记录"}
         
@@ -474,7 +459,7 @@ class AI_DialogueEngine:
         avg_score = sum(s['total_score'] for s in self.scores) / len(self.scores)
         
         # 各维度平均分
-        dimensions = ['product_knowledge', 'script_standard', 'objection_handling', 'communication', 'professional']
+        dimensions = ['content_accuracy', 'expression_clarity', 'customer_match', 'professionalism', 'bonus']
         dim_scores = {}
         for dim in dimensions:
             dim_scores[dim] = sum(s.get(dim, 0) for s in self.scores) / len(self.scores)
@@ -494,52 +479,46 @@ class AI_DialogueEngine:
         # 生成总体评价
         if avg_score >= 9:
             overall = "🏆 优秀！你的销售话术非常专业，能够灵活应对各种场景。继续保持！"
+            grade = "A"
         elif avg_score >= 7:
             overall = "🥈 良好！你掌握了基本的销售话术技巧，但在某些环节还有提升空间。多加练习会更出色！"
+            grade = "B"
         elif avg_score >= 5:
-            overall = "🥉 及格！你对产品有一定了解，但话术需要更加熟练。建议针对薄弱项进行专项训练。"
+            overall = "🥉 合格！你具备了基础的销售能力，建议系统学习产品知识和话术技巧。"
+            grade = "C"
         else:
-            overall = "📚 需改进！建议系统学习销售话术技巧，从基础开始逐步提升。不要气馁，多练习就会进步！"
+            overall = "📚 待提升！建议从基础开始学习，多观察优秀代表的话术，逐步提升专业能力。"
+            grade = "D"
         
         # 生成学习建议
         suggestions = []
-        if dim_scores['product_knowledge'] < 7:
+        if dim_scores.get('content_accuracy', 0) < 2:
             suggestions.append("加强产品知识学习，熟记关键数据")
-        if dim_scores['script_standard'] < 7:
-            suggestions.append("练习FAB法则和SPIN技巧")
-        if dim_scores['objection_handling'] < 7:
-            suggestions.append("学习异议处理框架（APRC法则）")
-        if dim_scores['communication'] < 7:
-            suggestions.append("注意沟通礼仪和称呼规范")
-        if dim_scores['professional'] < 7:
-            suggestions.append("提升专业术语使用准确性")
+        if dim_scores.get('expression_clarity', 0) < 1.5:
+            suggestions.append("练习结构化表达，先讲结论再展开")
+        if dim_scores.get('customer_match', 0) < 1.5:
+            suggestions.append("多倾听医生需求，针对性回应关切")
+        if dim_scores.get('professionalism', 0) < 1.5:
+            suggestions.append("注意专业术语使用，提升专业形象")
         
         if not suggestions:
-            suggestions.append("继续保持，可以尝试更高难度的医生角色")
+            suggestions.append("继续保持，向优秀迈进！")
         
         return {
             "overall_score": round(avg_score, 1),
-            "grade": self._score_to_grade(avg_score),
-            "dimension_scores": {k: round(v, 1) for k, v in dim_scores.items()},
-            "strengths": top_strengths,
-            "weaknesses": top_weaknesses,
-            "overall_feedback": overall,
+            "grade": grade,
+            "dimension_scores": {
+                "内容准确性": round(dim_scores.get('content_accuracy', 0), 1),
+                "表达清晰度": round(dim_scores.get('expression_clarity', 0), 1),
+                "客户需求匹配": round(dim_scores.get('customer_match', 0), 1),
+                "专业度": round(dim_scores.get('professionalism', 0), 1),
+                "加分项": round(dim_scores.get('bonus', 0), 1)
+            },
+            "strengths": top_strengths if top_strengths else ["态度积极"],
+            "weaknesses": top_weaknesses if top_weaknesses else ["继续努力"],
             "suggestions": suggestions,
-            "total_rounds": len(self.scores)
+            "overall_feedback": overall
         }
-    
-    def _score_to_grade(self, score):
-        """分数转等级"""
-        if score >= 9:
-            return "A"
-        elif score >= 7:
-            return "B"
-        elif score >= 5:
-            return "C"
-        elif score >= 4:
-            return "D"
-        else:
-            return "F"
 
 
 # 全局会话存储
@@ -547,13 +526,26 @@ ai_sessions = {}
 
 
 def create_session(user_id, doctor_type, scenario, style_tags=None):
-    """创建新会话"""
-    session_id = f"{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    
+    """创建新的AI对话会话"""
+    session_id = f"{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     engine = AI_DialogueEngine(session_id, doctor_type, scenario, style_tags)
     ai_sessions[session_id] = engine
-    
     return session_id, engine
+
+
+def process_message(session_id, message):
+    """处理用户消息"""
+    if session_id not in ai_sessions:
+        return {"error": "会话不存在，请重新开始"}
+    
+    engine = ai_sessions[session_id]
+    result = engine.process_turn(message)
+    
+    # 如果完成了，生成最终报告
+    if result.get('is_complete'):
+        result['final_report'] = engine.generate_final_report()
+    
+    return result
 
 
 def get_session(session_id):
@@ -561,50 +553,9 @@ def get_session(session_id):
     return ai_sessions.get(session_id)
 
 
-def process_message(session_id, user_message):
-    """处理用户消息"""
-    engine = get_session(session_id)
-    if not engine:
-        return {"error": "会话不存在或已过期"}
-    
-    result = engine.process_turn(user_message)
-    
-    # 如果完成了8轮，生成最终报告
-    if result['is_complete']:
-        result['final_report'] = engine.generate_final_report()
-        # 清理会话
+def delete_session(session_id):
+    """删除会话"""
+    if session_id in ai_sessions:
         del ai_sessions[session_id]
-    
-    return result
-
-
-if __name__ == "__main__":
-    # 测试
-    session_id, engine = create_session("test_user", "科室主任", "完整拜访流程")
-    print(f"会话创建: {session_id}")
-    print(f"系统Prompt:\n{engine.system_prompt[:500]}...")
-    
-    # 模拟对话
-    test_messages = [
-        "主任您好，我是丽珠医药的小王，打扰您几分钟。",
-        "我们新推出的维宝宁是注射用醋酸亮丙瑞林微球，E2去势率达到97.45%。",
-        "是的，我们有III期临床数据支持，网状Meta分析涵盖了94项RCT研究。",
-        "价格方面，维宝宁约1000元/支，虽然比竞品略高，但疗效更确切，患者依从性更好。",
-        "不良反应发生率很低，长期安全性数据也很充分。",
-        "我可以先给您带几份样品，您给几个患者试用一下。",
-        "非常感谢主任的支持，我会定期来跟进患者用药情况的。",
-        "谢谢主任，祝您工作顺利！"
-    ]
-    
-    for msg in test_messages:
-        print(f"\n用户: {msg}")
-        result = process_message(session_id, msg)
-        print(f"医生: {result['doctor_response']}")
-        print(f"评分: {result['evaluation']['total_score']}/10 - {result['evaluation']['grade']}")
-        print(f"反馈: {result['evaluation']['feedback']}")
-        
-        if result.get('final_report'):
-            print(f"\n{'='*50}")
-            print("最终报告:")
-            print(json.dumps(result['final_report'], ensure_ascii=False, indent=2))
-            break
+        return True
+    return False
