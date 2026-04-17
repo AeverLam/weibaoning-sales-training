@@ -169,7 +169,7 @@ def should_advance_round(doctor_reply, exchange_count):
 
 # ============ 核心函数：生成医生回复 ============
 def generate_doctor_reply(user_message, session, current_round):
-    """使用AI生成医生回复"""
+    """使用智谱AI生成医生回复"""
     
     doctor_type = session["doctor_type"]
     doctor = DOCTOR_PROFILES[doctor_type]
@@ -185,11 +185,19 @@ def generate_doctor_reply(user_message, session, current_round):
         else:
             history += f"{doctor['name']}：{msg['content']}\n"
     
+    # 判断用户回答质量
+    user_answer_quality = "good"
+    if len(user_message) < 30:
+        user_answer_quality = "poor"
+    elif "这个" in user_message and "那个" in user_message:
+        user_answer_quality = "vague"
+    
     # 医生系统提示词
     system_prompt = f"""你是{doctor['title']} {doctor['name']}，正在接待医药代表拜访。
 
 【你的性格】
 {doctor['personality']}
+说话风格：简短有力（30-60字），像真实医生说话，不要长篇大论。
 
 【当前场景】
 第{current_round}轮/共8轮：{scenario['topic']}
@@ -199,64 +207,83 @@ def generate_doctor_reply(user_message, session, current_round):
 {history}
 医药代表：{user_message}
 
+【用户回答质量】
+{user_answer_quality}
+
 【关键规则】
-1. 判断标准：
-   - 回答优秀/良好（信息准确、完整、清晰）→ 用陈述句认可，然后自然过渡到下一轮
-   - 回答有缺陷/差（信息缺失、不准确、不清晰）→ 指出问题，用问句追问，继续本轮
+1. 如果用户回答短/模糊/敷衍（质量差）→ 必须追问，要求详细说明，继续本轮
+2. 如果用户回答完整清晰（质量好）→ 可以简短认可，然后推进或继续
+3. 推进时必须：总结上轮 + 过渡词 + 下轮第一个问题 + 【推进到下一轮】
+4. 最多追问2次，达到后必须推进
+5. 回复必须简短（30-60字），像真实医生说话
 
-2. 【重要】推进规则：
-   - 如果还有疑问需要追问，用问句，不要加【推进到下一轮】
-   - 只有当问题探讨清楚，准备进入下一轮时，才加【推进到下一轮】
-   - 推进时必须一句话完成三件事：
-     a) 用陈述句总结/认可上轮
-     b) 用过渡词引出下轮话题
-     c) 用问句提出下轮的第一个问题
+【回复示例】
+- 追问："具体是什么情况？" / "能详细说说吗？" / "数据呢？"
+- 推进："了解了。说到{scenario['topic']}，维宝宁有什么特点？【推进到下一轮】"
 
-3. 示例：
-   - 追问（继续本轮）："除了疼痛，患者还有哪些副作用？"
-   - 推进（进入下轮）："明白了，内异症确实棘手。说到产品，维宝宁在这方面有什么特点？【推进到下一轮】"
+【格式要求】
+直接回复医生的话，不要加任何前缀、解释或"医生说："。"""
 
-4. 追问次数：最多追问2-3次，达到后必须推进
+    # 调用智谱AI
+    if ZHIPU_API_KEY:
+        try:
+            import requests
+            url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {ZHIPU_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "glm-4",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 100,
+                "top_p": 0.9
+            }
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            result = response.json()
+            if "choices" in result and len(result["choices"]) > 0:
+                reply = result["choices"][0]["message"]["content"].strip()
+                # 清理回复
+                reply = reply.replace(f"{doctor['name']}：", "").replace(f"{doctor['title']}：", "")
+                reply = reply.strip('"')
+                return reply
+        except Exception as e:
+            print(f"Zhipu API error: {e}")
+    
+    # 备用回复逻辑（当API不可用时）
+    return generate_fallback_reply(user_message, doctor, scenario, exchange_count, user_answer_quality)
 
-【回复格式】
-直接回复医生的话，不要加任何前缀或解释。"""
-
-    try:
-        # 这里调用AI API生成回复
-        # 实际部署时需要替换为真实的API调用
-        # 示例使用简单的模拟回复
-        
-        # 模拟智能判断：根据exchange_count和消息内容决定追问或推进
-        if exchange_count < 2 and len(user_message) < 50:
-            # 回答较短，继续追问
-            follow_up_questions = [
-                "能详细说说吗？",
-                "还有呢？",
-                "具体是什么情况？",
-                "为什么这样说？"
-            ]
-            reply = follow_up_questions[exchange_count % len(follow_up_questions)]
-        else:
-            # 回答足够，推进到下轮
-            next_scenario = DIALOGUE_SCENARIOS[current_round] if current_round < 8 else None
-            if next_scenario:
-                transitions = [
-                    f"明白了。说到{next_scenario['topic']}，{next_scenario['opening']}【推进到下一轮】",
-                    f"了解了。那关于{next_scenario['topic']}，{next_scenario['opening']}【推进到下一轮】",
-                    f"好的。接下来聊聊{next_scenario['topic']}，{next_scenario['opening']}【推进到下一轮】"
-                ]
-                reply = transitions[exchange_count % len(transitions)]
-            else:
-                reply = "好的，今天的交流很有收获。谢谢你的介绍。"
-        
-        return reply
-        
-    except Exception as e:
-        print(f"Generate doctor reply error: {e}")
-        return "嗯，我明白了。还有其他要补充的吗？"
+def generate_fallback_reply(user_message, doctor, scenario, exchange_count, user_answer_quality):
+    """当AI API不可用时使用的备用回复"""
+    
+    # 如果用户回答质量差，追问
+    if user_answer_quality in ["poor", "vague"] and exchange_count < 3:
+        follow_ups = [
+            "能具体说说吗？",
+            "详细一点。",
+            "数据呢？",
+            "举个例子。"
+        ]
+        return follow_ups[exchange_count % len(follow_ups)]
+    
+    # 如果已经对话2次以上，推进
+    if exchange_count >= 2:
+        transitions = [
+            f"了解了。{scenario['goal']}，维宝宁有什么特点？【推进到下一轮】",
+            f"知道了。那关于{scenario['topic']}，维宝宁有什么优势？【推进到下一轮】"
+        ]
+        return transitions[exchange_count % len(transitions)]
+    
+    # 默认继续
+    continues = ["嗯。", "继续。", "还有呢？"]
+    return continues[exchange_count % len(continues)]
 
 
-# ============ 核心函数：评估本轮表现 ============
+
 def evaluate_round(session, current_round, user_message="", doctor_reply=""):
     """
     评估本轮对话表现 - 新评分维度（总分10分）
