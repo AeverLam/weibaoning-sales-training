@@ -533,17 +533,16 @@ def process_message_async(open_id, user_id, text, message_id):
 # ============ 核心函数：生成回复 ============
 def generate_reply(open_id, user_id, text):
     """生成回复（核心逻辑）"""
-    
     try:
-        return _generate_reply_internal(open_id, user_id, text)
+        return _do_generate_reply(open_id, user_id, text)
     except Exception as e:
-        print(f"Error in generate_reply: {e}")
+        print(f"ERROR in generate_reply: {e}")
         import traceback
         traceback.print_exc()
-        return "抱歉，系统出现错误，请重新开始。发送'开始'重新训练。"
+        return f"系统错误: {str(e)[:50]}。请发送'开始'重新训练。"
 
-def _generate_reply_internal(open_id, user_id, text):
-    """生成回复的内部实现"""
+def _do_generate_reply(open_id, user_id, text):
+    """实际生成回复"""
     
     # 开始指令
     if text in ["/start", "开始", "开始训练", "开始练习"]:
