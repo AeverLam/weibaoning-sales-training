@@ -240,19 +240,22 @@ def generate_doctor_reply(user_message, session, current_round):
                     {"role": "user", "content": user_message}
                 ],
                 "temperature": 0.7,
-                "max_tokens": 100,
+                "max_tokens": 80,
                 "top_p": 0.9
             }
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            # 减少超时时间到10秒，避免Render超时
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
             result = response.json()
             if "choices" in result and len(result["choices"]) > 0:
                 reply = result["choices"][0]["message"]["content"].strip()
                 # 清理回复
                 reply = reply.replace(f"{doctor['name']}：", "").replace(f"{doctor['title']}：", "")
                 reply = reply.strip('"')
-                return reply
+                if reply:
+                    return reply
         except Exception as e:
             print(f"Zhipu API error: {e}")
+            # API调用失败，继续使用fallback
     
     # 备用回复逻辑（当API不可用时）
     return generate_fallback_reply(user_message, doctor, scenario, exchange_count, user_answer_quality)
