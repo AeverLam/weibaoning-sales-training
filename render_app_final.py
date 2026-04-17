@@ -257,17 +257,16 @@ def generate_doctor_reply(user_message, session, current_round):
 
 
 # ============ 核心函数：评估本轮表现 ============
-def evaluate_round(session, current_round, user_message="", doctor_reply=""):
+def evaluate_round(session, current_round):
     """
-    评估本轮对话表现 - 新评分维度（总分10分）
+    评估本轮对话表现
     
     评分维度：
-    - 内容准确性：0-3分（信息是否正确、专业）
-    - 表达清晰度：0-2分（逻辑是否清晰、易懂）
-    - 客户需求匹配：0-2分（是否回应医生关切）
-    - 专业度：0-2分（是否体现专业素养）
-    - 加分项：0-1分（超出预期的亮点）
-    - 追问惩罚：被追问1次-0.5分，2次-1分，3次-2分
+    - 回答准确性 30%
+    - 回答完整性 25%
+    - 表达清晰度 20%
+    - 追问惩罚 15%（被追问越多扣分越多）
+    - 难度系数 10%
     """
     
     round_data = session["current_round_data"]
@@ -276,86 +275,50 @@ def evaluate_round(session, current_round, user_message="", doctor_reply=""):
     doctor = DOCTOR_PROFILES[doctor_type]
     scenario = DIALOGUE_SCENARIOS[current_round - 1]
     
-    # 基础评分（根据回答质量）
-    message_length = len(user_message)
-    
-    # 内容准确性（0-3分）
-    if message_length > 100:
-        accuracy = 2.5
-    elif message_length > 50:
-        accuracy = 2.0
-    elif message_length > 30:
-        accuracy = 1.5
-    else:
-        accuracy = 1.0
-    
-    # 表达清晰度（0-2分）
-    clarity = 1.5 if message_length > 50 else 1.0
-    
-    # 客户需求匹配（0-2分）
-    match = 1.5 if message_length > 50 else 1.0
-    
-    # 专业度（0-2分）
-    professionalism = 1.5 if message_length > 50 else 1.0
-    
-    # 加分项（0-1分）
-    bonus = 0.5 if message_length > 100 else 0
-    
-    # 追问惩罚
+    # 基础分数（根据对话轮数调整）
+    # 理想情况：1轮回答清楚，得高分
+    # 被追问越多，基础分越低
     if exchange_count == 1:
-        penalty = 0
-        feedback = "回答准确完整，一次性抓住了重点，表现优秀！"
+        base_score = 9.0
     elif exchange_count == 2:
-        penalty = 0.5
-        feedback = "回答基本到位，但医生需要追问才获得完整信息，可以更加主动。"
+        base_score = 7.5
     elif exchange_count == 3:
-        penalty = 1.0
+        base_score = 6.0
+    else:
+        base_score = 5.0
+    
+    # 难度系数调整
+    difficulty_bonus = (doctor['difficulty'] - 3) * 0.2  # -0.4 ~ +0.4
+    
+    # 计算最终分数
+    final_score = min(10.0, max(1.0, base_score + difficulty_bonus))
+    
+    # 生成反馈
+    if exchange_count == 1:
+        feedback = "回答准确完整，一次性抓住了重点，表现优秀！"
+        strengths = ["信息准确", "回答完整", "表达清晰"]
+        improvements = []
+    elif exchange_count == 2:
+        feedback = "回答基本到位，但医生需要追问才获得完整信息，可以更加主动。"
+        strengths = ["信息基本准确", "能回应追问"]
+        improvements = ["可以更主动提供完整信息", "减少被追问次数"]
+    else:
         feedback = "回答不够完整或清晰，医生多次追问才获得所需信息，需要改进。"
-    else:
-        penalty = 2.0
-        feedback = "回答质量较差，无法有效传递关键信息，需要系统学习产品知识。"
-    
-    # 计算总分
-    total_score = accuracy + clarity + match + professionalism + bonus - penalty
-    total_score = max(0, min(10, total_score))
-    
-    # 生成 strengths 和 improvements
-    strengths = []
-    improvements = []
-    
-    if accuracy >= 2.5:
-        strengths.append("内容准确专业")
-    else:
-        improvements.append("提高内容准确性")
-        
-    if clarity >= 1.5:
-        strengths.append("表达清晰易懂")
-    else:
-        improvements.append("增强表达清晰度")
-        
-    if penalty == 0:
-        strengths.append("一次性回答到位")
-    else:
-        improvements.append("减少被追问次数")
+        strengths = ["能坚持对话"]
+        improvements = ["提高信息完整性", "增强表达清晰度", "预判医生关注点"]
     
     return {
         "round": current_round,
         "topic": scenario['topic'],
-        "score": round(total_score, 1),
+        "score": round(final_score, 1),
         "exchange_count": exchange_count,
-        "details": {
-            "内容准确性": accuracy,
-            "表达清晰度": clarity,
-            "客户需求匹配": match,
-            "专业度": professionalism,
-            "加分项": bonus,
-            "追问惩罚": -penalty
-        },
         "feedback": feedback,
         "strengths": strengths,
         "improvements": improvements
     }
 
+
+# ============ 核心函数：生成总结报告 ============
 def generate_summary(session_data):
     """生成总结报告"""
     
@@ -626,7 +589,7 @@ def generate_reply(open_id, user_id, text):
         
         if should_advance:
             # 评估本轮表现
-            evaluation = evaluate_round(session, current_round)
+            evaluation = evaluate_round(session, current_round, text)
             session["evaluations"].append(evaluation)
             
             # 清理医生回复中的标记
@@ -818,7 +781,7 @@ def chat():
     }
     
     if should_advance:
-        evaluation = evaluate_round(session, current_round)
+        evaluation = evaluate_round(session, current_round, text)
         session["evaluations"].append(evaluation)
         
         result["evaluation"] = evaluation
