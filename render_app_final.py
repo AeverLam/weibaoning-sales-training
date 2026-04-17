@@ -522,12 +522,27 @@ def send_feishu_message(open_id, user_id, reply_text):
 
 def process_message_async(open_id, user_id, text, message_id):
     """异步处理消息"""
-    if message_id in processed_messages:
-        return
-    
-    processed_messages.add(message_id)
-    reply_text = generate_reply(open_id, user_id, text)
-    send_feishu_message(open_id, user_id, reply_text)
+    try:
+        if message_id in processed_messages:
+            return
+        
+        processed_messages.add(message_id)
+        reply_text = generate_reply(open_id, user_id, text)
+        
+        # 确保有回复内容
+        if not reply_text:
+            reply_text = "抱歉，系统处理出错，请发送'开始'重新训练。"
+        
+        send_feishu_message(open_id, user_id, reply_text)
+    except Exception as e:
+        print(f"ERROR in process_message_async: {e}")
+        import traceback
+        traceback.print_exc()
+        # 尝试发送错误信息
+        try:
+            send_feishu_message(open_id, user_id, f"系统错误: {str(e)[:50]}。请发送'开始'重新训练。")
+        except:
+            pass
 
 
 # ============ 核心函数：生成回复 ============
