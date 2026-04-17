@@ -24,14 +24,47 @@ processed_messages = set()
 
 # ============ 医生角色配置 ============
 DOCTOR_PROFILES = {
-    "主任医师": {
-        "name": "王主任",
-        "title": "主任医师",
+    "主任级专家": {
+        "name": "陈教授",
+        "title": "主任级专家",
+        "difficulty": 5,
+        "strictness": 0.95,
+        "personality": "学术型、严谨、注重循证医学证据，对数据要求高，不轻易被说服",
+        "opening_style": "严肃专业，直接问重点"
+    },
+    "科室主任": {
+        "name": "刘主任",
+        "title": "科室主任",
+        "difficulty": 4,
+        "strictness": 0.8,
+        "personality": "管理型、务实、时间紧，关注科室效益和患者满意度",
+        "opening_style": "礼貌但直接，关心实用性"
+    },
+    "主治医师": {
+        "name": "张医生",
+        "title": "主治医师",
+        "difficulty": 3,
+        "strictness": 0.6,
+        "personality": "实用型、经验导向，关注临床实际效果",
+        "opening_style": "友好开放，愿意交流"
+    },
+    "住院医师": {
+        "name": "王医生",
+        "title": "住院医师",
+        "difficulty": 2,
+        "strictness": 0.4,
+        "personality": "学习型、听从上级，对新产品好奇但缺乏经验",
+        "opening_style": "谦虚好学，主动提问"
+    },
+    "带组专家": {
+        "name": "李教授",
+        "title": "带组专家",
         "difficulty": 5,
         "strictness": 0.9,
-        "personality": "权威严谨，问题深入，注重循证医学证据",
-        "opening_style": "严肃专业，直接切入重点"
-    },
+        "personality": "影响力型、决策权高，一言九鼎，注重品牌和口碑",
+        "opening_style": "威严但礼貌，试探对方实力"
+    }
+},
     "副主任医师": {
         "name": "李医生",
         "title": "副主任医师",
