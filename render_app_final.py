@@ -487,7 +487,7 @@ def generate_reply(open_id, user_id, text):
         return reply_text
     
     # 医生选择
-    elif text in ["1", "2", "3"] and user_sessions.get(user_id) == "selecting_doctor":
+    elif text in ["1", "2", "3", "4", "5"] and user_sessions.get(user_id) == "selecting_doctor":
         doctor_map = {"1": "主任级专家", "2": "科室主任", "3": "主治医师", "4": "住院医师", "5": "带组专家"}
         doctor_type = doctor_map.get(text, "副主任医师")
         
