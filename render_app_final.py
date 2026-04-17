@@ -649,6 +649,11 @@ def generate_reply(open_id, user_id, text):
 
 
 # ============ 飞书适配接口 ============
+@app.route("/webhook/feishu", methods=["POST"])
+def feishu_webhook():
+    """处理飞书消息 - 兼容 /webhook/feishu 路径"""
+    return feishu_chat()
+
 @app.route("/api/feishu/chat", methods=["POST"])
 def feishu_chat():
     """处理飞书消息 - 立即返回，异步处理"""
