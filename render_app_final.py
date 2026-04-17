@@ -24,29 +24,45 @@ processed_messages = set()
 
 # ============ 医生角色配置 ============
 DOCTOR_PROFILES = {
-    "主任医师": {
-        "name": "王主任",
-        "title": "主任医师",
+    "主任级专家": {
+        "name": "陈教授",
+        "title": "主任级专家",
         "difficulty": 5,
-        "strictness": 0.9,
-        "personality": "权威严谨，问题深入，注重循证医学证据",
-        "opening_style": "严肃专业，直接切入重点"
+        "strictness": 0.95,
+        "personality": "学术型、严谨、注重循证医学证据，对数据要求高，不轻易被说服",
+        "opening_style": "严肃专业，直接问重点"
     },
-    "副主任医师": {
-        "name": "李医生",
-        "title": "副主任医师",
+    "科室主任": {
+        "name": "刘主任",
+        "title": "科室主任",
         "difficulty": 4,
-        "strictness": 0.7,
-        "personality": "务实理性，关注性价比和临床实用性",
-        "opening_style": "友好但专业，愿意倾听"
+        "strictness": 0.8,
+        "personality": "管理型、务实、时间紧，关注科室效益和患者满意度",
+        "opening_style": "礼貌但直接，关心实用性"
     },
     "主治医师": {
         "name": "张医生",
         "title": "主治医师",
         "difficulty": 3,
-        "strictness": 0.5,
-        "personality": "学习意愿强，问题基础，愿意接受新信息",
-        "opening_style": "开放好奇，主动提问"
+        "strictness": 0.6,
+        "personality": "实用型、经验导向，关注临床实际效果",
+        "opening_style": "友好开放，愿意交流"
+    },
+    "住院医师": {
+        "name": "王医生",
+        "title": "住院医师",
+        "difficulty": 2,
+        "strictness": 0.4,
+        "personality": "学习型、听从上级，对新产品好奇但缺乏经验",
+        "opening_style": "谦虚好学，主动提问"
+    },
+    "带组专家": {
+        "name": "李教授",
+        "title": "带组专家",
+        "difficulty": 5,
+        "strictness": 0.9,
+        "personality": "影响力型、决策权高，一言九鼎，注重品牌和口碑",
+        "opening_style": "威严但礼貌，试探对方实力"
     }
 }
 
@@ -451,22 +467,34 @@ def generate_reply(open_id, user_id, text):
     if text in ["/start", "开始", "开始训练", "开始练习"]:
         reply_text = """🎯 请选择医生角色开始训练：
 
-1️⃣ 主任医师 - 难度⭐⭐⭐⭐⭐
-   权威严谨，问题深入，适合高手挑战
+1️⃣ 主任级专家 ⭐⭐⭐⭐⭐
+   学术型、严谨、注重循证医学证据
 
-2️⃣ 副主任医师 - 难度⭐⭐⭐⭐
-   务实关注性价比，标准难度（推荐）
+2️⃣ 科室主任 ⭐⭐⭐⭐
+   管理型、务实、关注科室效益
 
-3️⃣ 主治医师 - 难度⭐⭐⭐
-   学习意愿强，问题基础，适合新手
+3️⃣ 主治医师 ⭐⭐⭐
+   实用型、经验导向
 
-请回复数字 1、2 或 3 选择医生"""
+4️⃣ 住院医师 ⭐⭐
+   学习型、听从上级
+
+5️⃣ 带组专家 ⭐⭐⭐⭐⭐
+   影响力型、决策权高
+
+请回复数字 1-5 选择医生"""
         user_sessions[user_id] = "selecting_doctor"
         return reply_text
     
     # 医生选择
     elif text in ["1", "2", "3"] and user_sessions.get(user_id) == "selecting_doctor":
-        doctor_map = {"1": "主任医师", "2": "副主任医师", "3": "主治医师"}
+        doctor_map = {
+            "1": "主任级专家",
+            "2": "科室主任", 
+            "3": "主治医师",
+            "4": "住院医师",
+            "5": "带组专家"
+        }
         doctor_type = doctor_map.get(text, "副主任医师")
         
         session_id = str(uuid.uuid4())
@@ -521,7 +549,7 @@ def generate_reply(open_id, user_id, text):
     
     # 检查是否正在选择医生
     elif user_sessions.get(user_id) == "selecting_doctor":
-        return "请选择医生：回复 1（主任医师）、2（副主任医师）或 3（主治医师）"
+        return "请选择医生：回复 1-5 选择医生角色"
     
     # 检查是否有活跃会话
     elif user_id in user_sessions:
