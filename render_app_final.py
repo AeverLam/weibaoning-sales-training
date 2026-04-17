@@ -240,22 +240,19 @@ def generate_doctor_reply(user_message, session, current_round):
                     {"role": "user", "content": user_message}
                 ],
                 "temperature": 0.7,
-                "max_tokens": 80,
+                "max_tokens": 100,
                 "top_p": 0.9
             }
-            # 减少超时时间到10秒，避免Render超时
-            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
             result = response.json()
             if "choices" in result and len(result["choices"]) > 0:
                 reply = result["choices"][0]["message"]["content"].strip()
                 # 清理回复
                 reply = reply.replace(f"{doctor['name']}：", "").replace(f"{doctor['title']}：", "")
                 reply = reply.strip('"')
-                if reply:
-                    return reply
+                return reply
         except Exception as e:
             print(f"Zhipu API error: {e}")
-            # API调用失败，继续使用fallback
     
     # 备用回复逻辑（当API不可用时）
     return generate_fallback_reply(user_message, doctor, scenario, exchange_count, user_answer_quality)
@@ -536,6 +533,17 @@ def process_message_async(open_id, user_id, text, message_id):
 # ============ 核心函数：生成回复 ============
 def generate_reply(open_id, user_id, text):
     """生成回复（核心逻辑）"""
+    
+    try:
+        return _generate_reply_internal(open_id, user_id, text)
+    except Exception as e:
+        print(f"Error in generate_reply: {e}")
+        import traceback
+        traceback.print_exc()
+        return "抱歉，系统出现错误，请重新开始。发送'开始'重新训练。"
+
+def _generate_reply_internal(open_id, user_id, text):
+    """生成回复的内部实现"""
     
     # 开始指令
     if text in ["/start", "开始", "开始训练", "开始练习"]:
