@@ -272,9 +272,11 @@ def generate_fallback_reply(user_message, doctor, scenario, exchange_count, user
     
     # 如果已经对话2次以上，推进
     if exchange_count >= 2:
+        # 必须包含过渡词 + 问句 + 【推进到下一轮】
         transitions = [
-            f"了解了。{scenario['goal']}，维宝宁有什么特点？【推进到下一轮】",
-            f"知道了。那关于{scenario['topic']}，维宝宁有什么优势？【推进到下一轮】"
+            f"了解了。说到{scenario['topic']}，维宝宁在这方面有什么特点？【推进到下一轮】",
+            f"知道了。那关于{scenario['topic']}，维宝宁有什么具体优势？【推进到下一轮】",
+            f"明白了。说到产品，维宝宁在{scenario['topic']}上表现如何？【推进到下一轮】"
         ]
         return transitions[exchange_count % len(transitions)]
     
