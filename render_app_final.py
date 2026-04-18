@@ -23,6 +23,54 @@ sessions = {}
 user_sessions = {}
 processed_messages = set()
 
+# ============ 持久化消息去重 ============
+PROCESSED_MESSAGES_FILE = "/tmp/processed_messages.json"
+PROCESSED_MESSAGES_LOCK = threading.Lock()
+
+def load_processed_messages():
+    """从文件加载已处理的消息ID"""
+    global processed_messages
+    try:
+        if os.path.exists(PROCESSED_MESSAGES_FILE):
+            with open(PROCESSED_MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # 只保留7天内的记录
+                cutoff_time = datetime.now().timestamp() - 7 * 24 * 3600
+                processed_messages = {
+                    msg_id for msg_id, timestamp in data.items()
+                    if timestamp > cutoff_time
+                }
+                print(f"Loaded {len(processed_messages)} processed messages from file")
+    except Exception as e:
+        print(f"Error loading processed messages: {e}")
+        processed_messages = set()
+
+def save_processed_message(message_id):
+    """保存已处理的消息ID到文件"""
+    try:
+        with PROCESSED_MESSAGES_LOCK:
+            # 先读取现有数据
+            data = {}
+            if os.path.exists(PROCESSED_MESSAGES_FILE):
+                with open(PROCESSED_MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            
+            # 添加新记录
+            data[message_id] = datetime.now().timestamp()
+            
+            # 清理7天前的记录
+            cutoff_time = datetime.now().timestamp() - 7 * 24 * 3600
+            data = {k: v for k, v in data.items() if v > cutoff_time}
+            
+            # 保存回文件
+            with open(PROCESSED_MESSAGES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving processed message: {e}")
+
+# 启动时加载已处理的消息
+load_processed_messages()
+
 # ============ 医生角色配置 ============
 DOCTOR_PROFILES = {
     "主任级专家": {
@@ -523,10 +571,28 @@ def send_feishu_message(open_id, user_id, reply_text):
 def process_message_async(open_id, user_id, text, message_id):
     """异步处理消息"""
     try:
+        # 先检查是否已处理（内存 + 文件）
         if message_id in processed_messages:
+            print(f"Message {message_id} already processed (memory)")
             return
         
+        # 再次检查文件（防止多线程竞争）
+        try:
+            if os.path.exists(PROCESSED_MESSAGES_FILE):
+                with open(PROCESSED_MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if message_id in data:
+                        print(f"Message {message_id} already processed (file)")
+                        return
+        except:
+            pass
+        
+        # 添加到内存集合
         processed_messages.add(message_id)
+        
+        # 持久化到文件
+        save_processed_message(message_id)
+        
         reply_text = generate_reply(open_id, user_id, text)
         
         # 确保有回复内容
@@ -774,8 +840,23 @@ def feishu_chat():
         content = {}
     text = content.get("text", "").strip()
     
+    # 检查是否已处理（内存 + 文件）
     if message_id in processed_messages:
+        print(f"Duplicate message blocked (memory): {message_id}")
         return jsonify({"code": 0, "msg": "success"})
+    
+    # 再次检查文件（防止服务重启后内存丢失）
+    try:
+        if os.path.exists(PROCESSED_MESSAGES_FILE):
+            with open(PROCESSED_MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                file_data = json.load(f)
+                if message_id in file_data:
+                    print(f"Duplicate message blocked (file): {message_id}")
+                    # 同步到内存
+                    processed_messages.add(message_id)
+                    return jsonify({"code": 0, "msg": "success"})
+    except Exception as e:
+        print(f"Error checking processed messages file: {e}")
     
     thread = threading.Thread(
         target=process_message_async,
