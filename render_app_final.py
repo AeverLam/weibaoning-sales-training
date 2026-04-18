@@ -221,7 +221,17 @@ def generate_doctor_reply(user_message, session, current_round):
     elif "这个" in user_message and "那个" in user_message:
         user_answer_quality = "vague"
     
-    # 医生系统提示词
+    # 【后端强制判断】如果回答质量差且未达最大追问次数，强制追问，不调用AI
+    if user_answer_quality in ["poor", "vague"] and exchange_count < 3:
+        follow_ups = [
+            "能具体说说吗？",
+            "详细一点。",
+            "数据呢？",
+            "举个例子。"
+        ]
+        return follow_ups[exchange_count % len(follow_ups)]
+    
+    # 医生系统提示词（仅用于推进场景）
     system_prompt = f"""你是{doctor['title']} {doctor['name']}，正在接待医药代表拜访。
 
 【你的性格】
@@ -236,21 +246,14 @@ def generate_doctor_reply(user_message, session, current_round):
 {history}
 医药代表：{user_message}
 
-【用户回答质量】
-{user_answer_quality}
-
 【关键规则】
-1. 判断用户回答质量：
-   - 质量差（短/模糊/敷衍）→ 必须追问，要求详细说明
-   - 质量好（完整清晰）→ 可以简短认可，然后推进
-2. 追问时：直接提出具体问题，不要加【推进到下一轮】
-3. 推进时：必须添加【推进到下一轮】标记，否则系统不会推进
-4. 最多追问2次（第3次必须推进）
-5. 回复必须简短（30-60字），像真实医生说话
+1. 用户回答质量：{user_answer_quality}
+2. 如果质量好：简短认可，然后推进到下一轮，必须添加【推进到下一轮】标记
+3. 如果已对话2次以上：必须推进，添加【推进到下一轮】标记
+4. 回复必须简短（30-60字），像真实医生说话
 
 【回复示例】
-- 追问（质量差）："具体是什么情况？" / "能详细说说吗？" / "数据呢？"
-- 推进（质量好）："了解了。说到{scenario['topic']}，维宝宁有什么特点？【推进到下一轮】"
+- 推进："了解了。说到{scenario['topic']}，维宝宁有什么特点？【推进到下一轮】"
 
 【格式要求】
 直接回复医生的话，不要加任何前缀、解释或"医生说："。"""
