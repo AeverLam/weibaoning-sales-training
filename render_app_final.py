@@ -387,7 +387,9 @@ def evaluate_round(session, current_round, user_message="", doctor_reply=""):
         penalty = 1.0
     else:
         penalty = 2.0
-
+    
+    # 计算总分
+    total_score = accuracy + clarity + match + professionalism + bonus - penalty
     
     # 根据实际得分给出反馈（不是根据追问次数）
     if total_score >= 8:
