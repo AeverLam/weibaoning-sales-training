@@ -7,6 +7,7 @@ import os
 import json
 import uuid
 import threading
+import tempfile
 import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
@@ -22,9 +23,10 @@ ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
 sessions = {}
 user_sessions = {}
 processed_messages = set()
+SESSIONS_LOCK = threading.Lock()
 
 # ============ 持久化消息去重 ============
-PROCESSED_MESSAGES_FILE = "/tmp/processed_messages.json"
+PROCESSED_MESSAGES_FILE = os.path.join(tempfile.gettempdir(), "processed_messages.json")
 PROCESSED_MESSAGES_LOCK = threading.Lock()
 
 def load_processed_messages():
@@ -206,8 +208,17 @@ def generate_doctor_reply(user_message, session, current_round):
     round_data = session["current_round_data"]
     exchange_count = round_data["exchange_count"]
     
-    # 构建对话历史
+    # 构建完整对话历史（包含所有已完成轮次 + 当前轮）
     history = ""
+    # 追加已完成轮次的消息
+    for prev_round_idx in range(current_round - 1):
+        prev_round_data = session.get("round_history", [])[prev_round_idx] if session.get("round_history") else []
+        for msg in prev_round_data:
+            if msg["role"] == "user":
+                history += f"医药代表：{msg['content']}\n"
+            else:
+                history += f"{doctor['name']}：{msg['content']}\n"
+    # 追加当前轮的现有消息（不含正在构建的用户消息）
     for msg in round_data["messages"]:
         if msg["role"] == "user":
             history += f"医药代表：{msg['content']}\n"
@@ -261,7 +272,6 @@ def generate_doctor_reply(user_message, session, current_round):
     # 调用智谱AI
     if ZHIPU_API_KEY:
         try:
-            import requests
             url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
             headers = {
                 "Authorization": f"Bearer {ZHIPU_API_KEY}",
@@ -647,6 +657,7 @@ def _do_generate_reply(open_id, user_id, text):
             "user_id": user_id,
             "doctor_type": doctor_type,
             "current_round": 1,
+            "round_history": [],
             "current_round_data": {
                 "exchange_count": 0,
                 "messages": [],
@@ -743,7 +754,12 @@ def _do_generate_reply(open_id, user_id, text):
             
             # 清理医生回复中的标记
             clean_doctor_reply = doctor_reply.replace("【推进到下一轮】", "").strip()
-            
+
+            # 存档当前轮消息，推进时不丢失历史
+            if "round_history" not in session:
+                session["round_history"] = []
+            session["round_history"].append(list(round_data["messages"]))
+
             # 准备下一轮
             session["current_round"] = current_round + 1
             session["current_round_data"] = {
@@ -873,6 +889,7 @@ def start_session():
         "user_id": user_id,
         "doctor_type": doctor_type,
         "current_round": 1,
+        "round_history": [],
         "current_round_data": {
             "exchange_count": 0,
             "messages": [],
