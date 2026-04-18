@@ -232,15 +232,31 @@ def generate_doctor_reply(user_message, session, current_round):
     elif "这个" in user_message and "那个" in user_message:
         user_answer_quality = "vague"
     
-    # 【后端强制判断】如果回答质量差且未达最大追问次数，强制追问，不调用AI
-    if user_answer_quality in ["poor", "vague"] and exchange_count < 3:
-        follow_ups = [
-            "能具体说说吗？",
-            "详细一点。",
-            "数据呢？",
-            "举个例子。"
-        ]
-        return follow_ups[exchange_count % len(follow_ups)]
+    # 【强制追问】第一轮(exchange_count==1)必须追问，不能直接推进
+    # 第二轮(exchange_count==2)且质量差也追问
+    # 第三轮(exchange_count==3)及以上才允许推进
+    force_follow_up = (exchange_count == 1) or (user_answer_quality in ["poor", "vague"] and exchange_count < 3)
+    if force_follow_up:
+        # 根据医生性格生成个性化追问
+        strictness = doctor.get("strictness", 0.6)
+        if exchange_count == 1:
+            # 第一轮追问：问得更深一些
+            first_follow_ups = {
+                "主任级专家": "有循证医学证据支持吗？说几个具体数据。",
+                "科室主任": "临床实际效果怎么样？有患者随访数据吗？",
+                "主治医师": "实际用药体验如何？疗效和安全性呢？",
+                "住院医师": "老师们都怎么评价这个产品？安全性怎么样？",
+                "带组专家": "和同类药比起来核心优势在哪？说说循证依据。"
+            }
+            return first_follow_ups.get(doctor_type, "说说具体临床数据。")
+        else:
+            follow_ups = [
+                "能举个例子吗？",
+                "数据呢？详细说说。",
+                "安全性方面呢？",
+                "和同类药对比如何？"
+            ]
+            return follow_ups[exchange_count % len(follow_ups)]
     
     # 医生系统提示词（仅用于推进场景）
     system_prompt = f"""你是{doctor['title']} {doctor['name']}，正在接待医药代表拜访。
@@ -258,13 +274,20 @@ def generate_doctor_reply(user_message, session, current_round):
 医药代表：{user_message}
 
 【关键规则】
-1. 用户回答质量：{user_answer_quality}
-2. 如果质量好：简短认可，然后推进到下一轮，必须添加【推进到下一轮】标记
-3. 如果已对话2次以上：必须推进，添加【推进到下一轮】标记
+1. 已追问2次（exchange_count==3）且用户有实质回答：认可并推进，添加【推进到下一轮】
+2. 未达2次追问：必须追问，不推进
+3. 追问要符合医生性格和当前场景话题，不要重复之前的追问
 4. 回复必须简短（30-60字），像真实医生说话
 
-【回复示例】
-- 推进："了解了。说到{scenario['topic']}，维宝宁有什么特点？【推进到下一轮】"
+【追问风格】
+- 主任级专家：问数据、问证据
+- 科室主任：问效益、问实用性
+- 主治医师：问疗效、问经验
+- 住院医师：问老师怎么看、问安全性
+- 带组专家：问优势、问对比
+
+【推进示例】
+"有数据就好办了。说说吧，疗程和费用患者能接受吗？【推进到下一轮】"
 
 【格式要求】
 直接回复医生的话，不要加任何前缀、解释或"医生说："。"""
@@ -303,27 +326,35 @@ def generate_doctor_reply(user_message, session, current_round):
 
 def generate_fallback_reply(user_message, doctor, scenario, exchange_count, user_answer_quality):
     """当AI API不可用时使用的备用回复"""
-    
-    # 如果用户回答质量差，追问
-    if user_answer_quality in ["poor", "vague"] and exchange_count < 3:
+
+    # 【强制追问】第一轮必须追问；第二轮且质量差也追问
+    if exchange_count == 1 or (user_answer_quality in ["poor", "vague"] and exchange_count < 3):
+        first_follow_ups = {
+            "主任级专家": "有循证医学证据支持吗？说几个具体数据。",
+            "科室主任": "临床实际效果怎么样？有患者随访数据吗？",
+            "主治医师": "实际用药体验如何？疗效和安全性呢？",
+            "住院医师": "老师们都怎么评价这个产品？安全性怎么样？",
+            "带组专家": "和同类药比起来核心优势在哪？说说循证依据。"
+        }
+        if exchange_count == 1:
+            return first_follow_ups.get(doctor.get("title", "主治医师"), "说说具体临床数据。")
         follow_ups = [
-            "能具体说说吗？",
-            "详细一点。",
-            "数据呢？",
-            "举个例子。"
+            "能举个例子吗？",
+            "数据呢？详细说说。",
+            "安全性方面呢？",
+            "和同类药对比如何？"
         ]
         return follow_ups[exchange_count % len(follow_ups)]
-    
-    # 如果已经对话2次以上，推进
-    if exchange_count >= 2:
-        # 必须包含过渡词 + 问句 + 【推进到下一轮】
+
+    # 已追问2次且用户有实质回答，推进
+    if exchange_count >= 3:
         transitions = [
-            f"了解了。说到{scenario['topic']}，维宝宁在这方面有什么特点？【推进到下一轮】",
-            f"知道了。那关于{scenario['topic']}，维宝宁有什么具体优势？【推进到下一轮】",
-            f"明白了。说到产品，维宝宁在{scenario['topic']}上表现如何？【推进到下一轮】"
+            f"有数据就好办了。说到{scenario['topic']}，维宝宁有什么优势？【推进到下一轮】",
+            f"明白了。换一个角度，{scenario['topic']}方面呢？【推进到下一轮】",
+            f"了解了。那疗程和费用患者能接受吗？【推进到下一轮】"
         ]
         return transitions[exchange_count % len(transitions)]
-    
+
     # 默认继续
     continues = ["嗯。", "继续。", "还有呢？"]
     return continues[exchange_count % len(continues)]
