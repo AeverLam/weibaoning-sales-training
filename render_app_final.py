@@ -181,37 +181,18 @@ def should_advance_round(doctor_reply, exchange_count):
     判断是否应该推进到下一轮
     
     逻辑：
-    1. 最多3轮强制推进
-    2. 有明确推进标记时推进
-    3. 语义判断：医生是否已开启新话题（过渡词 + 新问题）
+    1. 最多3轮强制推进（追问2次后必须推进）
+    2. 只有医生明确添加【推进到下一轮】标记时才推进
     """
-    # 最多3轮强制推进
+    # 最多3轮强制推进（追问2次后必须推进）
     if exchange_count >= 3:
         return True
     
-    # 如果有明确的推进标记，直接推进
+    # 只有医生明确添加【推进到下一轮】标记时才推进
     if "【推进到下一轮】" in doctor_reply:
         return True
     
-    # 语义判断：医生是否已开启新话题
-    clean_reply = doctor_reply.replace("【推进到下一轮】", "").strip()
-    
-    # 检查是否包含话题转换信号词（结束上轮 + 开启下轮）
-    transition_signals = [
-        "说到", "谈到", "关于", "至于", "接下来", "那", "那么",
-        "我们聊聊", "说说", "讲讲", "看看", "聊聊", "说说看",
-        "对了", "顺便问一下", "另外"
-    ]
-    has_transition = any(signal in clean_reply for signal in transition_signals)
-    
-    # 检查是否以问句结束（开启新问题的第一个提问）
-    ends_with_new_question = clean_reply.endswith(("?", "？"))
-    
-    # 推进条件：有过渡信号 + 以新问题结束 + 至少已对话1轮
-    # 这意味着医生已经：总结了上轮 → 过渡到下轮 → 提出了第一个问题
-    if has_transition and ends_with_new_question and exchange_count >= 1:
-        return True
-    
+    # 其他情况不推进，继续本轮追问
     return False
 
 
@@ -259,15 +240,17 @@ def generate_doctor_reply(user_message, session, current_round):
 {user_answer_quality}
 
 【关键规则】
-1. 如果用户回答短/模糊/敷衍（质量差）→ 必须追问，要求详细说明，继续本轮
-2. 如果用户回答完整清晰（质量好）→ 可以简短认可，然后推进或继续
-3. 推进时必须：总结上轮 + 过渡词 + 下轮第一个问题 + 【推进到下一轮】
-4. 最多追问2次，达到后必须推进
+1. 判断用户回答质量：
+   - 质量差（短/模糊/敷衍）→ 必须追问，要求详细说明
+   - 质量好（完整清晰）→ 可以简短认可，然后推进
+2. 追问时：直接提出具体问题，不要加【推进到下一轮】
+3. 推进时：必须添加【推进到下一轮】标记，否则系统不会推进
+4. 最多追问2次（第3次必须推进）
 5. 回复必须简短（30-60字），像真实医生说话
 
 【回复示例】
-- 追问："具体是什么情况？" / "能详细说说吗？" / "数据呢？"
-- 推进："了解了。说到{scenario['topic']}，维宝宁有什么特点？【推进到下一轮】"
+- 追问（质量差）："具体是什么情况？" / "能详细说说吗？" / "数据呢？"
+- 推进（质量好）："了解了。说到{scenario['topic']}，维宝宁有什么特点？【推进到下一轮】"
 
 【格式要求】
 直接回复医生的话，不要加任何前缀、解释或"医生说："。"""
@@ -752,7 +735,7 @@ def _do_generate_reply(open_id, user_id, text):
         
         if should_advance:
             # 评估本轮表现
-            evaluation = evaluate_round(session, current_round)
+            evaluation = evaluate_round(session, current_round, text, doctor_reply)
             session["evaluations"].append(evaluation)
             
             # 清理医生回复中的标记
