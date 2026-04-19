@@ -258,13 +258,13 @@ def assess_user_answer_quality(user_message, scenario_topic, exchange_count):
         quality = "acceptable"
         reason = "基本合格"
 
-    # 追问/推进判断
-    # poor 或 vague：exchange < 3 则追问；>= 3 必须推进
-    # good：直接推进
-    # acceptable：exchange == 1 可追问；>= 2 推进
+    # 追问/推进判断（核心原则：追问一次再推进，不要直接跳过）
+    # good 答案：exchange=1 时先追问（展示医生回复：认可+过渡），exchange>=2 才推进
+    # poor/vague：exchange < 3 则追问；>= 3 强制推进
+    # acceptable：exchange < 2 则追问；>= 2 推进
     if quality == "good":
-        should_follow_up = False
-        should_advance = True
+        should_follow_up = (exchange_count < 2)   # 第一轮：先追问，展示医生回复
+        should_advance = (exchange_count >= 2)    # 第二轮：才推进
     elif quality in ("poor", "vague"):
         should_follow_up = (exchange_count < 3)
         should_advance = (exchange_count >= 3)
@@ -272,7 +272,7 @@ def assess_user_answer_quality(user_message, scenario_topic, exchange_count):
         should_follow_up = (exchange_count < 2)
         should_advance = (exchange_count >= 2)
 
-    # 轮次惩罚也影响推进概率：exchange 越多越倾向推进
+    # 轮次惩罚：exchange 越多越倾向推进
     if exchange_count >= 4:
         should_advance = True
         should_follow_up = False
@@ -291,17 +291,22 @@ def assess_user_answer_quality(user_message, scenario_topic, exchange_count):
 
 
 def should_advance_round(doctor_reply, exchange_count, quality_result):
-    """基于质量评估决定是否推进轮次，不再只看 exchange_count"""
-    # 医生回复带推进标记 → 推进
-    if "【推进到下一轮】" in doctor_reply:
-        return True
-    # 质量好 → 推进
-    if quality_result["should_advance"]:
-        return True
-    # 轮次过多 → 强制推进
+    """基于质量评估决定是否推进轮次：
+    - good 答案：必须等 exchange_count >= 2 才推进（第一轮先展示医生回复）
+    - poor/vague：exchange >= 3 才强制推进
+    - acceptable：exchange >= 2 才推进
+    """
+    # 强制推进条件优先
     if exchange_count >= 4:
         return True
-    return False
+    # 质量决定推进时机
+    quality = quality_result.get("quality", "acceptable")
+    if quality == "good":
+        return exchange_count >= 2   # good 答案：第二轮才推进（先展示医生回复）
+    elif quality in ("poor", "vague"):
+        return exchange_count >= 3   # poor/vague：第三轮才强制推进
+    else:  # acceptable
+        return exchange_count >= 2
 
 
 # ============================================================
@@ -343,12 +348,17 @@ def generate_doctor_reply(user_message, session, current_round):
     # --- 根据质量决定回复策略，并写入 system prompt ---
     if quality == "good":
         strategy = "GOOD"
-        strategy_instruction = """【策略：认可并推进】
-用户回答质量好。你要：
-1. 认可用户说的具体内容（必须提到用户说过的某个具体点，不能空泛说"很好"）
-2. 抛出一个与下一场景相关的问题，自然过渡到下一轮
-3. 末尾必须添加【推进到下一轮】
-示例："刚才提到的那组数据印象很深。关于维宝宁在围手术期的应用，您这边有使用经验吗？【推进到下一轮】" """
+        strategy_instruction = f"""【策略：认可+总结+过渡到下一轮】
+用户刚才的回答质量好（{reason}）。
+
+你必须按以下结构回复（50-80字）：
+1. 第一句：引用用户刚才说的某个具体内容做总结（例如：提到发病率10-15%、提到术后易复发等）
+2. 第二句：自然过渡，抛出一个关于「{scenario['topic']}」的问题，引发医生思考
+3. 末尾添加【推进到下一轮】
+
+示例："您刚才提到术后易复发的问题，这在临床上是共同的痛点。关于维宝宁在预防复发这块的数据，您有了解吗？【推进到下一轮】"
+
+禁止：不要只说"好"或"了解了"就跳转；禁止跳过总结直接问新问题。"""
     elif quality == "vague":
         strategy = "VAGUE"
         vagueness_desc = '/'.join(vagueness_flags) if vagueness_flags else '内容空泛'
@@ -402,11 +412,11 @@ def generate_doctor_reply(user_message, session, current_round):
 {strategy_instruction}
 
 【关键约束】
-- 回复 30-60 字，不要长篇大论
+- 追问时：30-60 字；推进时（含总结+过渡）：50-80 字
 - 禁止问"老师们都怎么说""大家都觉得""你们产品怎么样"这种泛泛的问题
 - 禁止重复之前问过的问题（请看对话历史）
 - 禁止问完之后自己回答自己
-- 追问时问题要具体；推进时要有认可+过渡
+- 推进时必须有：对用户上一轮内容的总结 + 新话题问题，两者缺一不可
 
 回复格式：直接输出医生的话，不要加角色名前缀。"""
 
