@@ -324,7 +324,11 @@ def generate_doctor_reply(user_message, session, current_round):
                         full_history += f"{doctor['name']}：{msg['content'][:100]}...\n"
 
     full_history += f"\n===== 第{current_round}轮（当前）=====\n"
-    for msg in round_data["messages"]:
+    # 排除预先放入的开场问题（用于 exchange=1 时只展示用户消息，不含开场问题）
+    msgs_to_show = round_data["messages"]
+    if exchange_count == 1 and msgs_to_show and msgs_to_show[0]["role"] == "doctor" and msgs_to_show[0].get("_is_opening"):
+        msgs_to_show = msgs_to_show[1:]
+    for msg in msgs_to_show:
         if msg["role"] == "user":
             full_history += f"医药代表：{msg['content']}\n"
         else:
@@ -338,8 +342,9 @@ def generate_doctor_reply(user_message, session, current_round):
     vagueness_flags = quality_result["vagueness_flags"]
 
     # --- 根据 exchange_count 决定医生说什么，不再按质量分类 ---
-    # exchange=1：必须追问一个问题（以问号结尾），给用户继续回答的机会
-    # exchange>=2：推进——先认可用户这一轮的具体回答，然后引入下一话题的新问题（以问号结尾）
+    # exchange=1：追问一个问题（以问号结尾），给用户继续深入回答的机会
+    # exchange=2：认可用户本轮回答（以句号结尾），不包含新话题问题；新话题问题在下一轮opening出现
+    next_topic = DIALOGUE_SCENARIOS[current_round]['topic'] if current_round < 8 else "后续合作"
     if exchange_count == 1:
         # 追问：结合用户说的具体内容，问一个具体的后续问题
         strategy_instruction = f"""【策略：追问】
@@ -350,7 +355,7 @@ def generate_doctor_reply(user_message, session, current_round):
 1. 必须从用户说的内容里找一个具体点来问，不能泛泛问"能详细说说吗"
 2. 问题要像真实医生提问，不是表演性的套路
 3. 结合场景「{scenario['topic']}」，问一个有临床意义的追问
-4. 格式：第一句直接提问，以问号结尾，30-60字
+4. 格式：直接提问，以问号结尾，30-60字
 
 追问示例（开场建立关系场景）：
 - 用户说"副作用大"→ "具体是哪些症状？潮热失眠多汗，还是骨关节痛？"
@@ -358,19 +363,20 @@ def generate_doctor_reply(user_message, session, current_round):
 - 用户说"不孕难治"→ "这类患者您一般怎么建议？手术还是先药物控制？"
 """
     else:
-        # 推进：认可 + 过渡到下一话题
-        next_topic = DIALOGUE_SCENARIOS[current_round]['topic'] if current_round < 8 else "后续合作"
-        strategy_instruction = f"""【策略：认可 + 过渡到下一话题】
+        # 推进：只认可用户本轮的回答，以句号结尾，不包含新话题问题
+        # 新话题的opening问题由系统在进入下一轮后自动展示，不在医生回复里
+        strategy_instruction = f"""【策略：认可本轮回答】
 本轮已进行{exchange_count}次对话，系统即将记录本轮评分并进入下一话题「{next_topic}」。
 
-你的回复结构（40-70字，分两句）：
-1. 第一句：引用用户刚才说的某个具体内容，给予认可（要具体，不是空泛说"好"）
-2. 第二句：引入下一话题「{next_topic}」的一个新问题，以问号结尾
+你的回复只做一件事（20-40字，以句号结尾）：
+引用用户刚才说的某个具体内容，给予认可。
+禁止：不要问新话题的问题；不要以问号结尾；不要空泛说"好""知道了"。
 
-示例（产品引入→机制与循证）：
-"失眠降低10个百分点，这个改善幅度确实值得看看数据支撑。维宝宁长期控制复发率的数据，您有了解吗？"
-
-禁止：以句号结尾；禁止空泛认可（如"好产品""知道了"）；禁止不提具体内容就直接跳转"""
+认可示例：
+- "副作用大、复发率高、不孕难治，这三个痛点抓得很准。"
+- "降低10个百分点失眠发生率，这个数据很有说服力。"
+- "7%~14%的年复发率，和达菲林相当，这个疗效值得肯定。"
+"""
 
     # --- System Prompt：完整构建 ---
     next_topic_name = DIALOGUE_SCENARIOS[current_round]['topic'] if current_round < 8 else "后续合作"
@@ -383,7 +389,7 @@ def generate_doctor_reply(user_message, session, current_round):
 【当前轮次】
 第{current_round}轮/共8轮：{scenario['topic']}
 本轮目标：{scenario['goal']}
-下一话题：{next_topic_name}
+下一话题：{next_topic}
 
 【对话历史】
 {full_history}
@@ -393,7 +399,7 @@ def generate_doctor_reply(user_message, session, current_round):
 - 质量评估：{quality} — {reason}
 - 关键词命中：{keyword_hits}个
 - 本轮已对话：{exchange_count}次
-- 系统状态：{'追问（用户有机会继续回答）' if exchange_count == 1 else f'推进（系统即将记录评分并进入「{next_topic_name}」）'}
+- 系统状态：{'追问（用户有机会继续回答）' if exchange_count == 1 else f'认可本轮回答后，系统将展示下一话题「{next_topic}」的开场问题'}
 
 {strategy_instruction}
 
@@ -401,8 +407,8 @@ def generate_doctor_reply(user_message, session, current_round):
 - 禁止问"老师们都怎么说""大家都觉得""你们产品怎么样"这种泛泛的问题
 - 禁止重复之前问过的问题（请看对话历史）
 - 禁止问完之后自己回答自己
-- 追问时：30-60字，以问号结尾
-- 推进时：40-70字，第一句认可+第二句下一话题新问题，以问号结尾
+- 追问时（exchange=1）：30-60字，以问号结尾
+- 认可时（exchange>=2）：20-40字，以句号结尾，不要问新话题的问题
 
 回复格式：直接输出医生的话，不要加角色名前缀。"""
 
@@ -440,36 +446,25 @@ def generate_doctor_reply(user_message, session, current_round):
 
 
 def generate_fallback_reply(user_message, doctor, scenario, exchange_count, quality, quality_result, current_round=1):
-    """降级回复（无API）：exchange_count 决定追问还是推进，不再依赖LLM"""
+    """降级回复（无API）：exchange=1追问，exchange>=2只认可，不问新话题问题"""
 
-    vagueness_flags = quality_result.get("vagueness_flags", [])
     next_topic = DIALOGUE_SCENARIOS[current_round]['topic'] if current_round < 8 else "后续合作"
 
-    # exchange=1：必须追问（以问号结尾）
+    # exchange=1：追问（以问号结尾）
     if exchange_count == 1:
         if quality in ("good", "acceptable"):
-            # 有一定内容，追问一个具体缺口
-            followups = [
-                f"您提到{user_message[:12]}……具体是什么情况？",
-                f"这类患者您平时怎么管理的？",
-                f"您说的这个，能举个例子吗？"
-            ]
-            return followups[0]
+            return f"您提到{user_message[:15]}……具体能展开说说吗？"
         else:  # poor, vague
-            followups = [
-                f"关于{scenario['topic']}，您目前用的是什么方案？",
-                f"能具体说说是哪类患者吗？",
-                f"这类药物您有使用经验吗？"
-            ]
-            return followups[min(exchange_count - 1, len(followups) - 1)]
+            return f"关于{scenario['topic']}，您目前用的是什么方案？"
 
-    # exchange>=2：推进——认可 + 过渡到下一话题（以问号结尾）
-    transitions = [
-        f"您提到{user_message[:10]}……这个值得看看数据支撑。维宝宁在{next_topic}方面的数据您有了解吗？",
-        f"好的，这方面的数据支撑挺重要。说到{next_topic}，您遇到过哪些情况？",
-        f"明白了。关于{next_topic}，您有什么经验可以分享吗？"
+    # exchange>=2：只认可本轮回答，以句号结尾，不问新话题问题
+    # （新话题问题由下一轮opening自动展示）
+    acknowledgments = [
+        f"您提到{user_message[:15]}……这个回答很到位。",
+        f"好的，您的信息很清晰。",
+        f"明白了，这方面的理解很准确。"
     ]
-    return transitions[min(exchange_count - 2, len(transitions) - 1)]
+    return acknowledgments[min(exchange_count - 2, len(acknowledgments) - 1)]
 
 
 # ============================================================
@@ -942,9 +937,12 @@ def _do_generate_reply(open_id, user_id, text):
                         break
 
             session["current_round"] = current_round + 1
+            next_round = session["current_round"]
+            next_scenario = DIALOGUE_SCENARIOS[next_round - 1]
+            # 进入下一轮后，立即把开场问题加入消息列表（用户不用发消息就能看到问题）
             session["current_round_data"] = {
                 "exchange_count": 0,
-                "messages": [],
+                "messages": [{"role": "doctor", "content": next_scenario['opening'], "_is_opening": True}],
                 "evaluated": False
             }
 
@@ -963,8 +961,6 @@ def _do_generate_reply(open_id, user_id, text):
 
 🎉 训练结束！发送「开始」可重新练习。"""
             else:
-                next_round = session["current_round"]
-                next_scenario = DIALOGUE_SCENARIOS[next_round - 1]
                 score = evaluation.get('score', 0)
                 feedback = evaluation.get('feedback', '')[:80]
 
@@ -972,6 +968,8 @@ def _do_generate_reply(open_id, user_id, text):
 
 📊 第{current_round}轮评分：{score}/10
 💬 反馈：{feedback}
+
+👨‍⚕️ {next_scenario['opening']}
 
 💡 第{next_round}轮/共8轮：{next_scenario['topic']}
 🎯 目标：{next_scenario['goal']}"""
