@@ -258,27 +258,32 @@ def assess_user_answer_quality(user_message, scenario_topic, exchange_count):
         quality = "acceptable"
         reason = "基本合格"
 
-    # 追问/推进判断（两个决策完全独立）
-    # should_follow_up：医生说什么（追问or过渡），由 exchange_count 决定
-    # should_advance：是否进入下一轮并评分，由 exchange_count + 质量共同决定
-    # 核心原则：每轮至少有一次医生的有效追问，才推进评分
-    if exchange_count == 1:
-        # 第一次交换：医生必须追问，用户有机会进一步回答
-        should_follow_up = True
-        should_advance = False
-    elif exchange_count == 2:
-        # 第二次交换：无论质量如何，都推进（给过一轮追问机会了）
-        should_follow_up = False
-        should_advance = True
-    else:
-        # exchange >= 3：vague/poor 质量最多追问2次，之后强制推进
-        should_follow_up = False
-        should_advance = True
-
-    # 绝对上限：exchange >= 5 强制推进，防止死循环
+    # 追问/推进判断（核心：追问次数由质量决定，不是一刀切）
+    # good：exchange=1 直接认可+推进（不多问）
+    # acceptable：exchange=1 追问，exchange=2 推进
+    # vague/poor：exchange 1-3 追问，exchange=4 才推进
+    # 绝对上限：exchange>=5 强制推进（防死循环）
     if exchange_count >= 5:
-        should_advance = True
         should_follow_up = False
+        should_advance = True
+    elif quality == "good":
+        # good：直接认可+推进，不追问
+        should_follow_up = False
+        should_advance = True
+    elif quality == "acceptable":
+        if exchange_count == 1:
+            should_follow_up = True
+            should_advance = False
+        else:  # exchange >= 2
+            should_follow_up = False
+            should_advance = True
+    else:  # poor, vague
+        if exchange_count <= 3:
+            should_follow_up = True
+            should_advance = False
+        else:  # exchange >= 4
+            should_follow_up = False
+            should_advance = True
 
     return {
         "quality": quality,
@@ -294,10 +299,7 @@ def assess_user_answer_quality(user_message, scenario_topic, exchange_count):
 
 
 def should_advance_round(doctor_reply, exchange_count, quality_result):
-    """
-    决定是否进入下一轮并评分——完全基于 exchange_count，
-    不再依赖 LLM 生成的【推进到下一轮】标记（标记经常导致提前推进）。
-    """
+    """直接使用 quality_result 中的 should_advance"""
     return quality_result.get("should_advance", False)
 
 
@@ -341,15 +343,28 @@ def generate_doctor_reply(user_message, session, current_round):
     keyword_hits = quality_result["keyword_hits"]
     vagueness_flags = quality_result["vagueness_flags"]
 
-    # --- 根据 exchange_count 决定医生说什么，不再按质量分类 ---
-    # exchange=1：追问一个问题（以问号结尾），给用户继续深入回答的机会
-    # exchange=2：认可用户本轮回答（以句号结尾），不包含新话题问题；新话题问题在下一轮opening出现
+    # --- 医生回复内容由质量和exchange_count共同决定 ---
+    # good：认可本轮回答（以句号结尾），不多追问
+    # acceptable/vague/poor：追问一个具体问题（以问号结尾）
     next_topic = DIALOGUE_SCENARIOS[current_round]['topic'] if current_round < 8 else "后续合作"
-    if exchange_count == 1:
-        # 追问：结合用户说的具体内容，问一个具体的后续问题
+    if quality == "good":
+        strategy_instruction = f"""【策略：认可本轮回答】
+用户刚才说：「{user_message}」
+质量好（{reason}），系统将记录本轮评分并进入下一话题「{next_topic}」。
+
+你的回复（20-40字，以句号结尾）：
+引用用户刚才说的某个具体内容，给予认可。
+禁止：以问号结尾；禁止空泛说"好""知道了"；不要问新话题的问题。
+
+认可示例：
+- "副作用大、复发率高、不孕难治，这三个痛点抓得很准。"
+- "降低10个百分点失眠发生率，这个数据很有说服力。"
+- "7%~14%的年复发率和达菲林相当，这个疗效值得肯定。"
+"""
+    else:
         strategy_instruction = f"""【策略：追问】
 用户刚才说：「{user_message}」
-质量：{quality} — {reason}；关键词命中：{keyword_hits}个。
+质量：{quality} — {reason}；关键词命中：{keyword_hits}个；本轮第{exchange_count}次对话。
 
 要求：
 1. 必须从用户说的内容里找一个具体点来问，不能泛泛问"能详细说说吗"
@@ -362,24 +377,8 @@ def generate_doctor_reply(user_message, session, current_round):
 - 用户说"复发率高"→ "术后不做管理的患者，复发一般多久出现？"
 - 用户说"不孕难治"→ "这类患者您一般怎么建议？手术还是先药物控制？"
 """
-    else:
-        # 推进：只认可用户本轮的回答，以句号结尾，不包含新话题问题
-        # 新话题的opening问题由系统在进入下一轮后自动展示，不在医生回复里
-        strategy_instruction = f"""【策略：认可本轮回答】
-本轮已进行{exchange_count}次对话，系统即将记录本轮评分并进入下一话题「{next_topic}」。
-
-你的回复只做一件事（20-40字，以句号结尾）：
-引用用户刚才说的某个具体内容，给予认可。
-禁止：不要问新话题的问题；不要以问号结尾；不要空泛说"好""知道了"。
-
-认可示例：
-- "副作用大、复发率高、不孕难治，这三个痛点抓得很准。"
-- "降低10个百分点失眠发生率，这个数据很有说服力。"
-- "7%~14%的年复发率，和达菲林相当，这个疗效值得肯定。"
-"""
 
     # --- System Prompt：完整构建 ---
-    next_topic_name = DIALOGUE_SCENARIOS[current_round]['topic'] if current_round < 8 else "后续合作"
     system_prompt = f"""你是{doctor['title']} {doctor['name']}，真实地扮演一位有血有肉的医生，不是背诵台词的机器人。
 
 【性格】
@@ -399,7 +398,7 @@ def generate_doctor_reply(user_message, session, current_round):
 - 质量评估：{quality} — {reason}
 - 关键词命中：{keyword_hits}个
 - 本轮已对话：{exchange_count}次
-- 系统状态：{'追问（用户有机会继续回答）' if exchange_count == 1 else f'认可本轮回答后，系统将展示下一话题「{next_topic}」的开场问题'}
+- 系统状态：{'追问（用户有机会继续回答）' if quality != "good" else f'认可本轮回答后，系统将展示下一话题「{next_topic}」的开场问题'}
 
 {strategy_instruction}
 
@@ -407,8 +406,8 @@ def generate_doctor_reply(user_message, session, current_round):
 - 禁止问"老师们都怎么说""大家都觉得""你们产品怎么样"这种泛泛的问题
 - 禁止重复之前问过的问题（请看对话历史）
 - 禁止问完之后自己回答自己
-- 追问时（exchange=1）：30-60字，以问号结尾
-- 认可时（exchange>=2）：20-40字，以句号结尾，不要问新话题的问题
+- 追问时（质量非good）：30-60字，以问号结尾
+- 认可时（质量good）：20-40字，以句号结尾，不要问新话题的问题
 
 回复格式：直接输出医生的话，不要加角色名前缀。"""
 
@@ -446,25 +445,13 @@ def generate_doctor_reply(user_message, session, current_round):
 
 
 def generate_fallback_reply(user_message, doctor, scenario, exchange_count, quality, quality_result, current_round=1):
-    """降级回复（无API）：exchange=1追问，exchange>=2只认可，不问新话题问题"""
+    """降级回复（无API）：quality决定追问还是认可"""
 
-    next_topic = DIALOGUE_SCENARIOS[current_round]['topic'] if current_round < 8 else "后续合作"
-
-    # exchange=1：追问（以问号结尾）
-    if exchange_count == 1:
-        if quality in ("good", "acceptable"):
-            return f"您提到{user_message[:15]}……具体能展开说说吗？"
-        else:  # poor, vague
-            return f"关于{scenario['topic']}，您目前用的是什么方案？"
-
-    # exchange>=2：只认可本轮回答，以句号结尾，不问新话题问题
-    # （新话题问题由下一轮opening自动展示）
-    acknowledgments = [
-        f"您提到{user_message[:15]}……这个回答很到位。",
-        f"好的，您的信息很清晰。",
-        f"明白了，这方面的理解很准确。"
-    ]
-    return acknowledgments[min(exchange_count - 2, len(acknowledgments) - 1)]
+    if quality == "good":
+        return f"您提到{user_message[:15]}……这个回答很到位。"
+    else:
+        # 追问
+        return f"关于{scenario['topic']}，您目前用的是什么方案？"
 
 
 # ============================================================
