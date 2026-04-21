@@ -269,14 +269,19 @@ def call_zhipu_ai(messages, temperature=0.7):
         return None
 
 # ============ 核心逻辑函数 ============
-def should_advance_round(doctor_reply, exchange_count):
+def should_advance_round(doctor_reply, exchange_count, current_round=1):
     """判断是否应该推进到下一轮"""
     # 最多3轮强制推进
     if exchange_count >= 3:
         return True
     
-    # 如果有明确的推进标记，直接推进
-    if "【推进到下一轮】" in doctor_reply:
+    # 第一轮特殊保护：必须至少对话2次（用户说+医生追问+用户补充）才能推进
+    # 防止第一轮说一句话就直接跳到第二轮
+    if current_round == 1 and exchange_count < 2:
+        return False
+    
+    # 如果有明确的推进标记，且已对话至少1轮，才推进
+    if "【推进到下一轮】" in doctor_reply and exchange_count >= 1:
         return True
     
     # 语义判断：医生是否已开启新话题
@@ -553,7 +558,7 @@ def handle_user_message(user_id, message_text, msg_id):
     doctor_reply = generate_doctor_reply(session_data, message_text)
     
     # 判断是否推进
-    should_advance = should_advance_round(doctor_reply, session_data.get('exchange_count', 0), session_data.get('current_round', 1))
+    should_advance = should_advance_round(doctor_reply, session_data.get('exchange_count', 0))
     
     if should_advance:
         # 本轮结束，进行评估
