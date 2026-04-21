@@ -129,7 +129,7 @@ DOCTOR_PROFILES = {
         "name": "王医生",
         "title": "主治医师",
         "type": "实用型",
-        "personality": "学习意愿强、关注新知识、会问基础问题，对改善子宫内膜容受性产品感兴趣",
+        "personality": "学习意愿强、关注新知识、会问基础问题，对维宝宁治疗内异症感兴趣",
         "concerns": ["适应症", "用法用量", "不良反应", "患者教育", "临床案例"],
         "difficulty": 3,
         "stars": "⭐⭐⭐"
@@ -269,19 +269,14 @@ def call_zhipu_ai(messages, temperature=0.7):
         return None
 
 # ============ 核心逻辑函数 ============
-def should_advance_round(doctor_reply, exchange_count, current_round=1):
+def should_advance_round(doctor_reply, exchange_count):
     """判断是否应该推进到下一轮"""
     # 最多3轮强制推进
     if exchange_count >= 3:
         return True
     
-    # 第一轮特殊保护：必须至少对话2次（用户说+医生追问+用户补充）才能推进
-    # 防止第一轮说一句话就直接跳到第二轮
-    if current_round == 1 and exchange_count < 2:
-        return False
-    
-    # 如果有明确的推进标记，且已对话至少1轮，才推进
-    if "【推进到下一轮】" in doctor_reply and exchange_count >= 1:
+    # 如果有明确的推进标记，直接推进
+    if "【推进到下一轮】" in doctor_reply:
         return True
     
     # 语义判断：医生是否已开启新话题
