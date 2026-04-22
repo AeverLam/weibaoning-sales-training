@@ -1,203 +1,31 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 维宝宁销售培训机器人 - 完整修复版
-包含：5医生角色、智能追问、自然过渡、新评分维度
+修复三个问题：
+1. 追问机制：语义级质量评估，不是纯模板轮换
+2. 评分机制：打破长度决定分数，引入真实质量维度
+3. 医生角色：回复承接用户说的话，而非模板化泛泛而谈
 """
 
 import os
 import json
-import time
+import re
 import uuid
-import requests
 import threading
+import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 # ============ 配置 ============
-ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
-ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-
-FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "cli_a938ac2a24391bcb")
+FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
+ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
 
-# 数据存储目录
-DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
-SESSIONS_DIR = os.path.join(DATA_DIR, 'sessions')
-PROCESSED_MSG_FILE = os.path.join(DATA_DIR, 'processed_messages.json')
-os.makedirs(SESSIONS_DIR, exist_ok=True)
-
-# 内存缓存
+# 存储
 sessions = {}
-user_progress = {}
 user_sessions = {}
 processed_messages = set()
-_sent_messages_cache = {}
-
-# ============ 消息去重持久化 ============
-def load_processed_messages():
-    """加载已处理的消息ID"""
-    global processed_messages
-    if os.path.exists(PROCESSED_MSG_FILE):
-        try:
-            with open(PROCESSED_MSG_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                cutoff_time = time.time() - 86400
-                processed_messages = set(
-                    msg_id for msg_id, timestamp in data.items()
-                    if timestamp > cutoff_time
-                )
-                print(f"Loaded {len(processed_messages)} processed messages")
-        except Exception as e:
-            print(f"Error loading processed messages: {e}")
-            processed_messages = set()
-
-def save_processed_message(message_id):
-    """保存已处理的消息ID"""
-    try:
-        data = {}
-        if os.path.exists(PROCESSED_MSG_FILE):
-            with open(PROCESSED_MSG_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        cutoff_time = time.time() - 86400
-        data = {k: v for k, v in data.items() if v > cutoff_time}
-        data[message_id] = time.time()
-        with open(PROCESSED_MSG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False)
-    except Exception as e:
-        print(f"Error saving processed message: {e}")
-
-load_processed_messages()
-
-# ============ 持久化函数 ============
-def save_session_to_file(session_id, session_data):
-    """保存会话到文件"""
-    filepath = os.path.join(SESSIONS_DIR, f"{session_id}.json")
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(session_data, f, ensure_ascii=False, indent=2)
-
-def load_session_from_file(session_id):
-    """从文件加载会话"""
-    filepath = os.path.join(SESSIONS_DIR, f"{session_id}.json")
-    if os.path.exists(filepath):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return None
-
-def delete_session_file(session_id):
-    """删除会话文件"""
-    filepath = os.path.join(SESSIONS_DIR, f"{session_id}.json")
-    if os.path.exists(filepath):
-        os.remove(filepath)
-
-def load_all_sessions():
-    """启动时加载所有会话"""
-    global sessions
-    if os.path.exists(SESSIONS_DIR):
-        for filename in os.listdir(SESSIONS_DIR):
-            if filename.endswith('.json'):
-                session_id = filename[:-5]
-                session_data = load_session_from_file(session_id)
-                if session_data:
-                    sessions[session_id] = session_data
-
-load_all_sessions()
-
-# ============ 5个医生角色定义 ============
-DOCTOR_PROFILES = {
-    "1": {
-        "name": "张主任",
-        "title": "主任级专家",
-        "type": "学术型",
-        "personality": "权威、严谨、注重临床证据，对新产品持谨慎态度，喜欢问深层次问题",
-        "concerns": ["疗效数据", "安全性", "指南推荐", "医保政策", "患者依从性"],
-        "difficulty": 5,
-        "stars": "⭐⭐⭐⭐⭐"
-    },
-    "2": {
-        "name": "李医生",
-        "title": "科室主任",
-        "type": "管理型",
-        "personality": "务实、关注性价比、喜欢对比竞品，时间紧张，注重效率",
-        "concerns": ["价格", "患者依从性", "与竞品的差异", "临床使用便利性", "联合用药"],
-        "difficulty": 4,
-        "stars": "⭐⭐⭐⭐"
-    },
-    "3": {
-        "name": "王医生",
-        "title": "主治医师",
-        "type": "实用型",
-        "personality": "学习意愿强、关注新知识、会问基础问题，对改善子宫内膜容受性产品感兴趣",
-        "concerns": ["适应症", "用法用量", "不良反应", "患者教育", "临床案例"],
-        "difficulty": 3,
-        "stars": "⭐⭐⭐"
-    },
-    "4": {
-        "name": "陈医生",
-        "title": "住院医师",
-        "type": "学习型",
-        "personality": "谦虚好学、听从上级、基础扎实但经验不足，需要详细指导",
-        "concerns": ["基础知识", "适应症", "禁忌症", "上级意见", "学习资料"],
-        "difficulty": 2,
-        "stars": "⭐⭐"
-    },
-    "5": {
-        "name": "刘主任",
-        "title": "带组专家",
-        "type": "影响力型",
-        "personality": "学术影响力大、决策权高、关注学科发展，对创新产品持开放态度",
-        "concerns": ["学术价值", "学科发展", "教学价值", "学术合作", "影响力提升"],
-        "difficulty": 5,
-        "stars": "⭐⭐⭐⭐⭐"
-    }
-}
-
-# ============ 8轮对话场景定义 ============
-DIALOGUE_SCENARIOS = [
-    {
-        "round": 1,
-        "topic": "开场与需求探询",
-        "doctor_init": "你好，请问有什么事吗？",
-        "goal": "建立信任，了解医生对子宫内膜异位症（内异症）诊疗的观点和痛点"
-    },
-    {
-        "round": 2,
-        "topic": "产品引入",
-        "goal": "自然引入维宝宁，引起医生兴趣"
-    },
-    {
-        "round": 3,
-        "topic": "作用机制",
-        "goal": "清晰阐述维宝宁治疗内异症的作用机制"
-    },
-    {
-        "round": 4,
-        "topic": "临床证据",
-        "goal": "介绍关键研究数据和临床案例"
-    },
-    {
-        "round": 5,
-        "topic": "安全性讨论",
-        "goal": "客观说明安全性，处理不良反应顾虑"
-    },
-    {
-        "round": 6,
-        "topic": "用法用量",
-        "goal": "说明起始剂量、使用方法、注意事项"
-    },
-    {
-        "round": 7,
-        "topic": "处理异议",
-        "goal": "处理价格异议，突出价值"
-    },
-    {
-        "round": 8,
-        "topic": "缔结与跟进",
-        "goal": "促成试用，确定跟进计划"
-    }
-]
 
 # ============ 知识库加载 ============
 PRODUCT_KNOWLEDGE_FILE = os.path.join(os.path.dirname(__file__), 'references', 'product-knowledge.md')
@@ -228,663 +56,1258 @@ def load_product_knowledge():
 
 load_product_knowledge()
 
-# ============ 评分维度（新） ============
-# 每轮10分：内容准确性3分 + 表达清晰度2分 + 客户需求匹配2分 + 专业度2分 + 加分项1分
+# ============ 持久化消息去重 ============
+PROCESSED_MESSAGES_FILE = "/tmp/processed_messages.json"
+PROCESSED_MESSAGES_LOCK = threading.Lock()
 
-# ============ 飞书API函数 ============
-def get_feishu_token():
-    """获取飞书tenant_access_token"""
+def load_processed_messages():
+    """从文件加载已处理的消息ID"""
+    global processed_messages
     try:
-        url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-        resp = requests.post(url, json={
-            "app_id": FEISHU_APP_ID,
-            "app_secret": FEISHU_APP_SECRET
-        }, timeout=10)
-        return resp.json().get("tenant_access_token")
+        if os.path.exists(PROCESSED_MESSAGES_FILE):
+            with open(PROCESSED_MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                cutoff_time = datetime.now().timestamp() - 7 * 24 * 3600
+                processed_messages = {
+                    msg_id for msg_id, timestamp in data.items()
+                    if timestamp > cutoff_time
+                }
+                print(f"Loaded {len(processed_messages)} processed messages from file")
     except Exception as e:
-        print(f"Error getting token: {e}")
-        return None
+        print(f"Error loading processed messages: {e}")
+        processed_messages = set()
 
-def send_feishu_message(user_id, msg_id, text):
-    """发送消息到飞书"""
-    def do_send():
-        try:
-            token = get_feishu_token()
-            if not token:
-                return
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            }
-            if msg_id:
-                url = f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/reply"
-                data = {
-                    "msg_type": "text",
-                    "content": json.dumps({"text": text})
-                }
-            else:
-                url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
-                data = {
-                    "receive_id": user_id,
-                    "msg_type": "text",
-                    "content": json.dumps({"text": text})
-                }
-            requests.post(url, headers=headers, json=data, timeout=10)
-        except Exception as e:
-            print(f"Error sending message: {e}")
-    threading.Thread(target=do_send, daemon=True).start()
-
-# ============ 智谱AI API调用 ============
-def call_zhipu_ai(messages, temperature=0.7):
-    """调用智谱AI API"""
+def save_processed_message(message_id):
+    """保存已处理的消息ID到文件"""
     try:
-        headers = {
-            "Authorization": f"Bearer {ZHIPU_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "glm-4",
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": 500
-        }
-        resp = requests.post(ZHIPU_API_URL, headers=headers, json=data, timeout=30)
-        result = resp.json()
-        if 'choices' in result and len(result['choices']) > 0:
-            return result['choices'][0]['message']['content']
-        return None
+        with PROCESSED_MESSAGES_LOCK:
+            data = {}
+            if os.path.exists(PROCESSED_MESSAGES_FILE):
+                with open(PROCESSED_MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            data[message_id] = datetime.now().timestamp()
+            cutoff_time = datetime.now().timestamp() - 7 * 24 * 3600
+            data = {k: v for k, v in data.items() if v > cutoff_time}
+            with open(PROCESSED_MESSAGES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
     except Exception as e:
-        print(f"Error calling Zhipu AI: {e}")
-        return None
+        print(f"Error saving processed message: {e}")
 
-# ============ 核心逻辑函数 ============
-def should_advance_round(doctor_reply, exchange_count):
-    """判断是否应该推进到下一轮"""
-    # 最多3轮强制推进
-    if exchange_count >= 3:
-        return True
-    
-    # 如果有明确的推进标记，直接推进
-    if "【推进到下一轮】" in doctor_reply:
-        return True
-    
-    # 语义判断：医生是否已开启新话题
-    clean_reply = doctor_reply.replace("【推进到下一轮】", "").strip()
-    
-    # 检查是否包含话题转换信号词
-    transition_signals = [
-        "说到", "谈到", "关于", "至于", "接下来", "那", "那么",
-        "我们聊聊", "说说", "讲讲", "看看", "聊聊", "说说看"
+load_processed_messages()
+
+# ============ 医生角色配置 ============
+DOCTOR_PROFILES = {
+    "主任级专家": {
+        "name": "陈教授",
+        "title": "主任级专家",
+        "difficulty": 5,
+        "strictness": 0.95,
+        "personality": "学术型、严谨、注重循证医学证据，对数据要求高，不轻易被说服",
+        "opening_style": "严肃专业，直接问重点"
+    },
+    "科室主任": {
+        "name": "刘主任",
+        "title": "科室主任",
+        "difficulty": 4,
+        "strictness": 0.8,
+        "personality": "管理型、务实、时间紧，关注科室效益和患者满意度",
+        "opening_style": "礼貌但直接，关心实用性"
+    },
+    "主治医师": {
+        "name": "张医生",
+        "title": "主治医师",
+        "difficulty": 3,
+        "strictness": 0.6,
+        "personality": "实用型、经验导向，关注临床实际效果",
+        "opening_style": "友好开放，愿意交流"
+    },
+    "住院医师": {
+        "name": "王医生",
+        "title": "住院医师",
+        "difficulty": 2,
+        "strictness": 0.4,
+        "personality": "学习型、听从上级，对新产品好奇但缺乏经验",
+        "opening_style": "谦虚好学，主动提问"
+    },
+    "带组专家": {
+        "name": "李教授",
+        "title": "带组专家",
+        "difficulty": 5,
+        "strictness": 0.9,
+        "personality": "影响力型、决策权高，一言九鼎，注重品牌和口碑",
+        "opening_style": "威严但礼貌，试探对方实力"
+    }
+}
+
+# ============ 对话场景配置 ============
+DIALOGUE_SCENARIOS = [
+    {
+        "round": 1,
+        "topic": "开场建立关系",
+        "goal": "建立信任，了解医生对子宫内膜异位症的诊疗观点",
+        "key_points": ["礼貌问候", "了解现状", "寻找痛点"],
+        "opening": "你好，请问有什么事吗？"
+    },
+    {
+        "round": 2,
+        "topic": "产品引入",
+        "goal": "自然引入维宝宁，引起医生兴趣",
+        "key_points": ["产品定位", "核心优势", "差异化特点"],
+        "opening": "说到产品，维宝宁在这方面有什么特点？"
+    },
+    {
+        "round": 3,
+        "topic": "机制与循证",
+        "goal": "阐述维宝宁的作用机制和临床证据",
+        "key_points": ["作用机制", "临床数据", "指南推荐"],
+        "opening": "维宝宁的具体作用机制是什么？有相关的临床数据支持吗？"
+    },
+    {
+        "round": 4,
+        "topic": "临床应用",
+        "goal": "探讨维宝宁在具体临床场景中的应用",
+        "key_points": ["适用人群", "用药时机", "联合用药"],
+        "opening": "在实际临床中，维宝宁适合哪些患者使用？"
+    },
+    {
+        "round": 5,
+        "topic": "安全性与耐受性",
+        "goal": "解答医生对药物安全性的顾虑",
+        "key_points": ["不良反应", "禁忌症", "特殊人群"],
+        "opening": "患者比较关心药物的安全性，维宝宁在这方面的表现如何？"
+    },
+    {
+        "round": 6,
+        "topic": "竞品对比",
+        "goal": "客观比较维宝宁与竞品的差异",
+        "key_points": ["与GnRH对比", "与避孕药对比", "与手术对比"],
+        "opening": "相比其他治疗方案，维宝宁有什么独特之处？"
+    },
+    {
+        "round": 7,
+        "topic": "处理异议",
+        "goal": "有效应对医生的疑虑和反对意见",
+        "key_points": ["价格异议", "疗效质疑", "使用习惯"],
+        "opening": "有些医生觉得维宝宁价格偏高，你怎么看待这个问题？"
+    },
+    {
+        "round": 8,
+        "topic": "达成共识与后续",
+        "goal": "促成试用或进一步交流",
+        "key_points": ["试用邀请", "资料提供", "后续跟进"],
+        "opening": "基于我们今天的交流，您愿意让合适的患者试用维宝宁吗？"
+    }
+]
+
+# ===== 话题关键词映射（用于评估用户回答是否触及本轮主题）=====
+TOPIC_KEYWORDS = {
+    "开场建立关系": ["子宫内膜异位症", "内异症", "巧克力囊肿", "腺肌症", "痛经", "不孕", "患者", "科室", "治疗", "新产品", "维宝宁", "产品", "介绍", "聊", "了解"],
+    "产品引入": ["维宝宁", "地诺孕素", "孕激素", "GnRH", "唯散宁", "疗效", "数据", "适应症", "上市", "进口", "医保", "特点", "优势", "独特"],
+    "机制与循证": ["机制", "作用", "原理", "孕激素", "内膜萎缩", "病灶", "临床试验", "研究", "证据", "指南", "共识", "推荐", "随机", "对照"],
+    "临床应用": ["患者", "剂量", "用法", "联合", "手术", "复发", "生育", "备孕", "月经", "疗程", "停药", "处方", "适合"],
+    "安全性与耐受性": ["副作用", "不良反应", "出血", "肝功能", "肾功能", "闭经", "骨质", "耐受", "停药", "安全性", "禁忌", "长期"],
+    "竞品对比": ["达菲林", "抑那通", "亮丙", "GnRH-a", "避孕药", "地屈孕酮", "手术", "对比", "差异", "优势", "缺点", "仿制药"],
+    "处理异议": ["价格", "医保", "费用", "担心", "顾虑", "不好", "没用过", "没听过", "贵", "依从性", "患者经济", "报销"],
+    "达成共识与后续": ["试用", "先试试", "合适的患者", "可以", "愿意", "跟进", "资料", "约定", "下次", "联系", "拜访"],
+}
+
+# ============================================================
+# 修复1：追问机制——语义级质量评估，不再只看长度
+# ============================================================
+def assess_user_answer_quality(user_message, scenario_topic, exchange_count):
+    """
+    多维度评估用户回答质量：
+    - 维度1：信息密度（字数 + 句数）
+    - 维度2：内容空洞度（模板句/纯语气词检测）
+    - 维度3：关键词命中（是否触及本轮话题）
+    - 维度4：轮次惩罚（被追问次数越多质量越低）
+    返回质量等级 + 是否应追问 + 是否应推进
+    """
+    text = user_message.strip()
+    word_count = len(text)
+
+    # --- 维度1：信息密度 ---
+    # 统计实际句子数（以句号/问号/感叹号结尾）
+    sentences = re.findall(r'[^。！？\n]+[。！？\n]?', text)
+    meaningful_sentences = [s for s in sentences if len(s.strip()) > 3]
+    sentence_count = len(meaningful_sentences)
+
+    if word_count >= 50 and sentence_count >= 2:
+        density_level = 3  # 充实
+    elif word_count >= 25 and sentence_count >= 1:
+        density_level = 2  # 合格
+    elif word_count >= 10:
+        density_level = 1  # 偏少
+    else:
+        density_level = 0  # 空洞
+
+    # --- 维度2：内容空洞度检测 ---
+    vagueness_patterns = [
+        (r'^(这个|那个|嗯|哦|好吧|好的|行|OK|嗯嗯)[。,，、\s]*$', "纯语气词/代词开场无实质"),
+        (r'^.{0,10}[的|得|地][^，,]{0,15}$', "仅一个不完整句子"),
+        (r'这个[^，,]{0,30}的[^，,]*$', "以「这个...的」结尾无展开"),
+        (r'^(还行|不错|可以|还好|好吧)[。]?$', "仅模糊肯定无展开"),
+        (r'^[?\？\！\…\.]+$', "纯标点"),
+        (r'^(好的|知道了|了解)[。]?$', "仅表态无内容"),
+        (r'^(请问|我想问)[^，,]{0,10}$', "问句开头但未展开"),
     ]
-    has_transition = any(signal in clean_reply for signal in transition_signals)
-    
-    # 检查是否以问句结束
-    ends_with_new_question = clean_reply.endswith(("?", "？"))
-    
-    # 推进条件：有过渡信号 + 以新问题结束 + 至少已对话1轮
-    if has_transition and ends_with_new_question and exchange_count >= 1:
-        return True
-    
-    return False
 
-def evaluate_response(user_message, doctor_context, round_num, follow_up_count):
-    """评估用户回答质量（新评分维度）"""
-    
-    # 根据轮次提供知识库参考
-    knowledge_ref = ""
+    vagueness_flags = []
+    for pattern, label in vagueness_patterns:
+        if re.search(pattern, text):
+            vagueness_flags.append(label)
+
+    has_vagueness = bool(vagueness_flags)
+
+    # --- 维度3：关键词命中 ---
+    keywords = TOPIC_KEYWORDS.get(scenario_topic, [])
+    keyword_hits = sum(1 for kw in keywords if kw in text)
+
+    # --- 维度4：轮次惩罚 ---
+    repeat_penalty = exchange_count  # 被追问次数越多说明前面回答越差
+
+    # --- 综合判定 ---
+    # 核心原则：空洞内容无论多长都是低质量；有关键词且有实质内容才是高质量
+    if density_level == 0 or (not text):
+        quality = "poor"
+        reason = "无实质内容"
+    elif has_vagueness and density_level <= 1:
+        quality = "poor"
+        reason = f"内容空洞：{vagueness_flags[0]}"
+    elif density_level >= 2 and keyword_hits >= 1:
+        quality = "good"
+        reason = f"内容充实（{sentence_count}句）且命中{keyword_hits}个关键词"
+    elif density_level >= 2 and keyword_hits == 0:
+        quality = "acceptable"
+        reason = "有内容但未触及本轮话题关键词"
+    elif has_vagueness or density_level == 1:
+        quality = "vague"
+        reason = f"内容单薄或空洞：{'/'.join(vagueness_flags) if vagueness_flags else '字数不足'}"
+    else:
+        quality = "acceptable"
+        reason = "基本合格"
+
+    # 追问/推进判断（核心原则：追问一次再推进，不要直接跳过）
+    # good 答案：exchange=1 时先追问（展示医生回复：认可+过渡），exchange>=2 才推进
+    # poor/vague：exchange < 3 则追问；>= 3 强制推进
+    # acceptable：exchange < 2 则追问；>= 2 推进
+    if quality == "good":
+        should_follow_up = (exchange_count < 2)   # 第一轮：先追问，展示医生回复
+        should_advance = (exchange_count >= 2)    # 第二轮：才推进
+    elif quality in ("poor", "vague"):
+        should_follow_up = (exchange_count < 3)
+        should_advance = (exchange_count >= 3)
+    else:  # acceptable
+        should_follow_up = (exchange_count < 2)
+        should_advance = (exchange_count >= 2)
+
+    # 轮次惩罚：exchange 越多越倾向推进
+    if exchange_count >= 4:
+        should_advance = True
+        should_follow_up = False
+
+    return {
+        "quality": quality,
+        "reason": reason,
+        "keyword_hits": keyword_hits,
+        "density_level": density_level,
+        "sentence_count": sentence_count,
+        "vagueness_flags": vagueness_flags,
+        "repeat_penalty": repeat_penalty,
+        "should_follow_up": should_follow_up,
+        "should_advance": should_advance,
+    }
+
+
+def should_advance_round(doctor_reply, exchange_count, quality_result):
+    """基于质量评估决定是否推进轮次：
+    - good 答案：必须等 exchange_count >= 2 才推进（第一轮先展示医生回复）
+    - poor/vague：exchange >= 3 才强制推进
+    - acceptable：exchange >= 2 才推进
+    """
+    # 强制推进条件优先
+    if exchange_count >= 4:
+        return True
+    # 质量决定推进时机
+    quality = quality_result.get("quality", "acceptable")
+    if quality == "good":
+        return exchange_count >= 2   # good 答案：第二轮才推进（先展示医生回复）
+    elif quality in ("poor", "vague"):
+        return exchange_count >= 3   # poor/vague：第三轮才强制推进
+    else:  # acceptable
+        return exchange_count >= 2
+
+
+# ============================================================
+# 修复2：医生角色——回复承接用户说的话，不走模板
+# ============================================================
+def generate_doctor_reply(user_message, session, current_round):
+    doctor_type = session["doctor_type"]
+    doctor = DOCTOR_PROFILES[doctor_type]
+    scenario = DIALOGUE_SCENARIOS[current_round - 1]
+    round_data = session["current_round_data"]
+    exchange_count = round_data["exchange_count"]
+
+    # --- 构建对话历史 ---
+    full_history = ""
+    if "all_rounds_messages" in session:
+        for round_num, round_messages in session["all_rounds_messages"].items():
+            if int(round_num) < current_round:
+                full_history += f"\n===== 第{round_num}轮 =====\n"
+                for msg in round_messages:
+                    if msg["role"] == "user":
+                        full_history += f"医药代表：{msg['content'][:100]}...\n"
+                    else:
+                        full_history += f"{doctor['name']}：{msg['content'][:100]}...\n"
+
+    full_history += f"\n===== 第{current_round}轮（当前）=====\n"
+    for msg in round_data["messages"]:
+        if msg["role"] == "user":
+            full_history += f"医药代表：{msg['content']}\n"
+        else:
+            full_history += f"{doctor['name']}：{msg['content']}\n"
+
+    # --- 核心：质量评估 ---
+    quality_result = assess_user_answer_quality(user_message, scenario['topic'], exchange_count)
+    quality = quality_result["quality"]
+    reason = quality_result["reason"]
+    keyword_hits = quality_result["keyword_hits"]
+    vagueness_flags = quality_result["vagueness_flags"]
+
+    # --- 根据质量决定回复策略，并写入 system prompt ---
+    if quality == "good":
+        strategy = "GOOD"
+        strategy_instruction = f"""【策略：认可+总结+过渡到下一轮】
+用户刚才的回答质量好（{reason}）。
+
+你必须按以下结构回复（50-80字）：
+1. 第一句：引用用户刚才说的某个具体内容做总结（例如：提到发病率10-15%、提到术后易复发等）
+2. 第二句：自然过渡，抛出一个关于「{scenario['topic']}」的问题，引发医生思考
+3. 末尾添加【推进到下一轮】
+
+示例："您刚才提到术后易复发的问题，这在临床上是共同的痛点。关于维宝宁在预防复发这块的数据，您有了解吗？【推进到下一轮】"
+
+禁止：不要只说"好"或"了解了"就跳转；禁止跳过总结直接问新问题。"""
+    elif quality == "vague":
+        strategy = "VAGUE"
+        vagueness_desc = '/'.join(vagueness_flags) if vagueness_flags else '内容空泛'
+        strategy_instruction = f"""【策略：精准追问（用户回答质量问题：{vagueness_desc}）】
+用户说了「{user_message}」，但内容空泛或缺乏具体信息。
+追问要求：
+1. 必须从用户说的内容里找一个具体点来追问——不能泛泛问"能详细说说吗"
+2. 医生的问题是真实的临床疑惑，不是表演性的套路
+3. 追问要有具体指向，例如：
+   - 用户说"效果不错"→ "是疼痛控制好，还是影像学上病灶缩小了？"
+   - 用户说"有点担心"→ "您主要担心哪方面？出血还是对卵巢功能的影响？"
+   - 用户说"没怎么用过"→ "内异症手术后的患者您一般用什么方案管理？"
+4. 不要推进轮次"""
+    else:  # poor 或 acceptable
+        if quality == "poor":
+            strategy = "POOR"
+            strategy_instruction = f"""【策略：追问（用户回答质量差：「{user_message}」）】
+用户几乎没有提供有用信息。医生需要：
+1. 问一个具体的、能引发思考的问题
+2. 问题要与当前场景「{scenario['topic']}」直接相关
+3. 禁止：问"详细说说""能具体点吗"——这些不算有效追问
+4. 可以结合用户说的零星内容，从具体角度切入"""
+        else:
+            strategy = "ACCEPTABLE"
+            strategy_instruction = """【策略：视情况追问或推进（用户回答质量一般）】
+用户有一定内容但不完整或不深入。
+1. 如果是第一次交换：追问一个具体缺口
+2. 如果已交换过：可以推进到下一轮
+3. 追问要承接用户说的具体内容"""
+
+    # --- 根据轮次准备知识库内容 ---
+    knowledge_section = ""
     if PRODUCT_KNOWLEDGE:
-        if round_num == 1:
-            knowledge_ref = """
-**第1轮参考知识（内异症疾病）**：
-- 子宫内膜异位症被称为"不死的癌症"
+        if current_round == 1:
+            knowledge_section = """
+【产品知识参考 - 第1轮（疾病背景）】
+- 子宫内膜异位症被称为"不死的癌症"，严重影响女性身心健康
 - 三大难题：疼痛（70-80%患者）、复发（2年20%，5年50%）、不孕（20-50%患者）
 """
-        elif round_num == 2:
-            knowledge_ref = """
-**第2轮参考知识（产品信息）**：
+        elif current_round == 2:
+            knowledge_section = """
+【产品知识参考 - 第2轮（产品信息）】
 - 维宝宁通用名：注射用醋酸曲普瑞林微球
-- 规格：3.75mg/瓶
-- 适应症：子宫内膜异位症（I至IV期）
+- 规格：3.75mg/瓶，适应症：子宫内膜异位症（I至IV期）
 - 治疗理念："告别异痛，维守芳华"
 """
-        elif round_num == 3:
-            knowledge_ref = """
-**第3轮参考知识（作用机制）**：
+        elif current_round == 3:
+            knowledge_section = """
+【产品知识参考 - 第3轮（作用机制）】
 - GnRH-a类药物，抑制垂体-卵巢轴，降低雌激素
 - 形成药物性闭经，使异位内膜萎缩
 - 微球制剂缓释，维持稳定血药浓度
 """
-        elif round_num == 4:
-            knowledge_ref = """
-**第4轮参考知识（临床数据）**：
+        elif current_round == 4:
+            knowledge_section = """
+【产品知识参考 - 第4轮（临床数据）】
 - 痛经VAS降低99%，盆腔痛VAS降低75%
 - E2去势率97.45%（第12周）
 - 囊肿缩小5.0mm（vs达菲林2.0mm）
-- 月经恢复缩短8-12天
-- 妊娠率87.3%
+- 月经恢复缩短8-12天，妊娠率87.3%
 """
-        elif round_num == 5:
-            knowledge_ref = """
-**第5轮参考知识（安全性）**：
-- Cmax仅1.32ng/ml（达菲林的18%）
+        elif current_round == 5:
+            knowledge_section = """
+【产品知识参考 - 第5轮（安全性）】
+- Cmax仅1.32ng/ml（达菲林的18%），突释效应更低
 - 辅料PLGA仅为达菲林的18%
 - 注射部位痛发生率2.4%
 - 主要不良反应：低雌激素症状（潮热、阴道干燥）
 """
-        elif round_num == 6:
-            knowledge_ref = """
-**第6轮参考知识（用法用量）**：
-- 3.75mg，臀部肌肉注射，每4周一次
-- 月经周期第1-5天开始
-"""
-        elif round_num == 7:
-            knowledge_ref = """
-**第7轮参考知识（卖点/竞品）**：
-- 深度降酮率：第1月95.1%，第2-3月100%
-- 突释效应更低，Cmax为达菲林18%
-- 辅料量仅为达菲林18%
-- 医保乙类，支付标准1000元/支
-"""
-        elif round_num == 8:
-            knowledge_ref = """
-**第8轮参考知识（指南/总结）**：
-- 2021年《子宫内膜异位症诊治指南（第三版）》：GnRH-a用于复发防治
-- 首个国产长效曲普瑞林微球，化学药品2.2类
-- 生产厂家：丽珠医药集团
-"""
-    
-    eval_prompt = f"""你是一位销售培训专家，正在评估医药代表的回答质量。
-
-**当前轮次**：第{round_num}轮
-**医生问题/陈述**：{doctor_context}
-**医药代表回答**：{user_message}
-**追问次数**：{follow_up_count}次
-
-{knowledge_ref}
-
-**评估维度**（总分10分）：
-1. 内容准确性（0-3分）：信息是否正确、专业，数据是否准确（对照知识库检查）
-2. 表达清晰度（0-2分）：逻辑是否清晰、易懂，结构是否合理
-3. 客户需求匹配（0-2分）：是否回应了医生的关切和问题
-4. 专业度（0-2分）：是否体现专业素养，术语使用是否得当
-5. 加分项（0-1分）：是否有超出预期的亮点
-
-**准确性特别说明**：
-- 如果回答中包含错误数据（如错误的百分比、错误的用法用量），内容准确性应扣分
-- 如果回答与知识库中的关键数据不符，需要指出错误
-
-**追问惩罚**：
-- 0次追问：不扣分
-- 1次追问：扣0.5分
-- 2次追问：扣1分
-- 3次追问：扣2分
-
-**评分标准**：
-- 9-10分：优秀
-- 7-8分：良好
-- 5-6分：合格
-- 0-4分：待提升
-
-**是否需要追问**：
-如果回答得分低于6分或过于简短（少于30字）或包含错误信息，应该追问。
-
-请输出JSON格式：
-{{
-  "content_accuracy": 分数,
-  "expression_clarity": 分数,
-  "customer_match": 分数,
-  "professionalism": 分数,
-  "bonus": 分数,
-  "total_score": 总分,
-  "grade": "等级(A/B/C/D/F)",
-  "need_follow_up": true/false,
-  "follow_up_question": "如果需要追问，写出追问内容",
-  "strengths": ["亮点1", "亮点2"],
-  "weaknesses": ["改进点1", "改进点2"],
-  "feedback": "个性化反馈建议（如数据有误请指出正确数据）"
-}}"""
-    
-    messages = [
-        {"role": "system", "content": "你是一位专业的医药销售培训专家。"},
-        {"role": "user", "content": eval_prompt}
-    ]
-    
-    result = call_zhipu_ai(messages, temperature=0.3)
-    if result:
-        try:
-            # 提取JSON
-            import re
-            json_match = re.search(r'\{.*\}', result, re.DOTALL)
-            if json_match:
-                eval_data = json.loads(json_match.group())
-                # 应用追问惩罚
-                base_score = eval_data.get('total_score', 5)
-                penalty = {0: 0, 1: 0.5, 2: 1, 3: 2}.get(follow_up_count, 2)
-                final_score = max(0, base_score - penalty)
-                eval_data['total_score'] = round(final_score, 1)
-                return eval_data
-        except:
-            pass
-    
-    # 默认评分
-    return {
-        "content_accuracy": 2,
-        "expression_clarity": 1.5,
-        "customer_match": 1.5,
-        "professionalism": 1.5,
-        "bonus": 0,
-        "total_score": 6.5 - {0: 0, 1: 0.5, 2: 1, 3: 2}.get(follow_up_count, 2),
-        "grade": "C",
-        "need_follow_up": len(user_message) < 30,
-        "follow_up_question": "能详细说说吗？我想了解更多细节。",
-        "strengths": ["态度积极"],
-        "weaknesses": ["可以更加详细"],
-        "feedback": "回答需要更加具体和专业。"
-    }
-
-def generate_doctor_reply(session_data, user_message):
-    """生成医生回复"""
-    doctor_type = session_data.get('doctor_type', '3')
-    doctor_profile = DOCTOR_PROFILES.get(doctor_type, DOCTOR_PROFILES['3'])
-    current_round = session_data.get('current_round', 1)
-    exchange_count = session_data.get('exchange_count', 0)
-    
-    scenario = DIALOGUE_SCENARIOS[current_round - 1] if current_round <= len(DIALOGUE_SCENARIOS) else DIALOGUE_SCENARIOS[-1]
-    
-    # 构建对话历史
-    history = session_data.get('messages', [])
-    history_text = "\n".join([f"{'医生' if msg['role'] == 'doctor' else '代表'}：{msg['content']}" for msg in history[-6:]])
-    
-    # 根据当前轮次提取相关知识
-    knowledge_section = ""
-    if PRODUCT_KNOWLEDGE:
-        if current_round == 1:
-            # 第1轮：内异症疾病背景
-            knowledge_section = """
-**内异症疾病知识**：
-- 子宫内膜异位症被称为"不死的癌症"，严重影响女性身心健康
-- 三大治疗难题：疼痛（70-80%患者有痛经、慢性盆腔痛、性交痛）、复发（术后2年平均复发率20%，5年高达50%）、不孕（20-50%患者合并不孕）
-"""
-        elif current_round == 2:
-            # 第2轮：产品引入
-            knowledge_section = """
-**维宝宁产品基本信息**：
-- 通用名：注射用醋酸曲普瑞林微球
-- 规格：3.75mg/瓶
-- 适应症：子宫内膜异位症（I至IV期）
-- 用法：臀部肌肉注射，每4周一次，月经周期第1-5天开始
-- 治疗理念："告别异痛，维守芳华"
-"""
-        elif current_round == 3:
-            # 第3轮：作用机制
-            knowledge_section = """
-**维宝宁作用机制**：
-- GnRH-a类药物，通过抑制垂体-卵巢轴，降低雌激素水平
-- 形成药物性闭经，使异位内膜萎缩
-- 微球制剂实现缓释，维持稳定的血药浓度
-"""
-        elif current_round == 4:
-            # 第4轮：临床证据
-            knowledge_section = """
-**维宝宁临床数据**：
-- 痛经VAS评分较基线降低99%
-- 非经期盆腔痛VAS评分较基线降低75%
-- E2去势率：治疗第12周末高达97.45%
-- 异位囊肿缩小中位数：5.0mm（vs达菲林2.0mm，p<0.05）
-- 月经恢复时间缩短8-12天
-- 临床妊娠率：87.3%（网状Meta分析，三者最高）
-"""
-        elif current_round == 5:
-            # 第5轮：安全性
-            knowledge_section = """
-**维宝宁安全性特点**：
-- 创新微球专利技术，突释效应更低
-- 给药初期Cmax值仅1.32ng/ml，约为达菲林的18%
-- 辅料（PLGA）量更少，仅为达菲林的18%
-- 注射部位痛发生率仅2.4%
-- 不良反应：主要为低雌激素症状（潮热、阴道干燥等）
-"""
         elif current_round == 6:
-            # 第6轮：用法用量
             knowledge_section = """
-**维宝宁用法用量**：
-- 子宫内膜异位症：3.75mg，臀部肌肉注射，每4周一次
-- 开始时间：月经周期第1-5天开始治疗
-- 包装：每盒含无菌粉末1瓶 + 助悬剂2ml玻璃安瓿1支
-- 贮藏：遮光，密闭，2-8℃保存
+【产品知识参考 - 第6轮（用法用量）】
+- 3.75mg，臀部肌肉注射，每4周一次
+- 月经周期第1-5天开始治疗
 """
         elif current_round == 7:
-            # 第7轮：处理异议（价格/竞品）
             knowledge_section = """
-**维宝宁核心卖点**：
-1. 深度降酮，疗效卓越：深度降酮率（T<20ng/dL）给药第1月95.1%，第2、3月均为100%，优于同类产品
-2. 创新制备工艺，突释效应更低：Cmax仅为达菲林的18%，"反跳现象"引起的不良反应更少
-3. 创新递送技术，安全性更优：辅料量仅为达菲林的18%，注射部位痛发生率仅2.4%
-4. 医保乙类（2023年国谈目录，支付标准1000元/支）
+【产品知识参考 - 第7轮（卖点/竞品）】
+- 深度降酮率：第1月95.1%，第2-3月100%
+- 首个国产长效曲普瑞林微球，化学药品2.2类
+- 医保乙类，支付标准1000元/支
 """
         elif current_round == 8:
-            # 第8轮：缔结与跟进
             knowledge_section = """
-**维宝宁指南推荐**：
+【产品知识参考 - 第8轮（指南/总结）】
 - 2021年《子宫内膜异位症诊治指南（第三版）》：GnRH-a用于复发防治
-- 维宝宁是首个国产长效曲普瑞林微球，化学药品2.2类（改良型新药）
 - 生产厂家：丽珠医药集团股份有限公司
 """
-    
-    prompt = f"""你是一位{doctor_profile['title']}（{doctor_profile['type']}），{doctor_profile['personality']}。
 
-**当前场景**：{scenario['topic']}
-**本轮目标**：{scenario['goal']}
-**当前是第{current_round}轮，本轮已对话{exchange_count}次**
+    # --- System Prompt：完整构建 ---
+    system_prompt = f"""你是{doctor['title']} {doctor['name']}，真实地扮演一位有血有肉的医生，不是背诵台词的机器人。
+
+【性格】
+{doctor['personality']}
+说话风格：简短有力（30-60字），像真实医生说话，不啰嗦。
+
+【当前轮次】
+第{current_round}轮/共8轮：{scenario['topic']}
+本轮目标：{scenario['goal']}
 
 {knowledge_section}
 
-**对话历史**：
-{history_text}
+【对话历史】
+{full_history}
 
-**医药代表最新回答**：{user_message}
+【本轮对话分析】
+- 医药代表刚才说：「{user_message}」
+- 质量评估：{quality} — {reason}
+- 关键词命中数：{keyword_hits} 个
+- 本轮已对话次数：{exchange_count}次
 
-**回复规则**：
-1. 保持医生角色，用第一人称"我"
-2. 根据回答质量决定是追问还是推进：
-   - 如果回答不充分（简短、模糊、未回应关切）：追问当前话题，不要推进
-   - 如果回答充分且满意：一句话完成三件事：
-     a) 简要认可/总结上轮（陈述句）
-     b) 用过渡词引出下轮话题（如"说到"、"关于"、"那"）
-     c) 用问句提出下轮的第一个问题
-     d) 加上【推进到下一轮】标记
+{strategy_instruction}
 
-3. 追问示例：
-   "除了疼痛，患者还有其他不适吗？"
-   
-4. 推进示例：
-   "明白了，内异症确实棘手。说到产品，维宝宁在这方面有什么特点？【推进到下一轮】"
+【关键约束】
+- 追问时：30-60 字；推进时（含总结+过渡）：50-80 字
+- 禁止问"老师们都怎么说""大家都觉得""你们产品怎么样"这种泛泛的问题
+- 禁止重复之前问过的问题（请看对话历史）
+- 禁止问完之后自己回答自己
+- 推进时必须有：对用户上一轮内容的总结 + 新话题问题，两者缺一不可
 
-5. 每次回复控制在2-3句话，保持对话节奏
-6. 基于知识库中的准确数据提问或回应，不要编造数据
+回复格式：直接输出医生的话，不要加角色名前缀。"""
 
-请生成医生回复："""
-    
-    messages = [
-        {"role": "system", "content": "你是一位专业的妇科/生殖科医生，正在进行医药代表拜访。请基于提供的知识库内容进行对话。"},
-        {"role": "user", "content": prompt}
+    if ZHIPU_API_KEY:
+        try:
+            url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {ZHIPU_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "glm-4",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"医药代表说：「{user_message}」"}
+                ],
+                "temperature": 0.8,
+                "max_tokens": 120,
+                "top_p": 0.9
+            }
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            result = response.json()
+            if "choices" in result and len(result["choices"]) > 0:
+                reply = result["choices"][0]["message"]["content"].strip()
+                # 清理可能的角色名前缀
+                reply = re.sub(rf'^{re.escape(doctor["name"])}[:：]\s*', '', reply)
+                reply = re.sub(rf'^{re.escape(doctor["title"])}[:：]\s*', '', reply)
+                reply = reply.strip('"').strip()
+                return reply
+        except Exception as e:
+            print(f"Zhipu API error: {e}")
+
+    # ===== API 不可用时的降级逻辑（仍基于质量评估，不走纯模板）=====
+    return generate_fallback_reply(user_message, doctor, scenario, exchange_count, quality, quality_result, current_round)
+
+
+def generate_fallback_reply(user_message, doctor, scenario, exchange_count, quality, quality_result, current_round=1):
+    """降级回复：没有 API 时，基于质量评估生成有针对性的 fallback，不再纯模板轮换"""
+
+    vagueness_flags = quality_result.get("vagueness_flags", [])
+    vagueness_desc = '/'.join(vagueness_flags) if vagueness_flags else ''
+
+    if quality == "good":
+        transitions = [
+            f"这个了解。说到{scenario['topic']}，维宝宁在这方面有什么具体数据？【推进到下一轮】",
+            f"有道理。在实际临床上，{scenario['topic']}这块您遇到过哪些情况？【推进到下一轮】",
+            f"明白了。这样的话，维宝宁在{scenario['topic']}上有什么优势？【推进到下一轮】"
+        ]
+        return transitions[min(exchange_count, len(transitions) - 1)]
+
+    elif quality == "vague":
+        # 有针对性：用户说"效果不错"，医生追问"哪方面的效果"
+        vague_followups = [
+            f"「{user_message[:15]}……」能举个例子具体说说吗？",
+            f"刚才说的，具体是哪方面的情况？",
+            f"您提到{scenario['topic']}，目前科里这类患者多吗？"
+        ]
+        return vague_followups[min(exchange_count, len(vague_followups) - 1)]
+
+    elif quality == "poor":
+        poor_followups = [
+            f"关于{scenario['topic']}，您目前用的是什么方案？",
+            f"能具体说说是哪类患者吗？",
+            f"这类药物您有使用经验吗？"
+        ]
+        return poor_followups[min(exchange_count, len(poor_followups) - 1)]
+
+    else:  # acceptable
+        if exchange_count >= 2:
+            transitions = [
+                f"了解了。说到{scenario['topic']}，维宝宁有什么特点？【推进到下一轮】",
+                f"知道了。那在{scenario['topic']}上，您有什么顾虑吗？【推进到下一轮】"
+            ]
+            return transitions[min(exchange_count - 2, len(transitions) - 1)]
+        else:
+            continues = ["嗯，具体怎么用的？", "还有呢？", "您接着说。"]
+            return continues[exchange_count % len(continues)]
+
+
+# ============================================================
+# 修复3：评分机制——打破长度决定分数，引入真实质量维度
+# ============================================================
+def evaluate_round(session, current_round, user_message="", doctor_reply=""):
+    """
+    多维度评分：
+    - 内容准确性（关键词命中 + 句子完整性）
+    - 表达清晰度（句子结构 + 标点）
+    - 客户需求匹配（关键词命中数）
+    - 专业度（是否使用专业术语）
+    - 追问惩罚（exchange_count 越多扣越多）
+    不再：纯长度决定一切
+    """
+    round_data = session["current_round_data"]
+    exchange_count = round_data["exchange_count"]
+    doctor_type = session["doctor_type"]
+    doctor = DOCTOR_PROFILES[doctor_type]
+    scenario = DIALOGUE_SCENARIOS[current_round - 1]
+
+    text = user_message.strip()
+
+    # --- 维度A：内容准确性（关键词命中）---
+    keywords = TOPIC_KEYWORDS.get(scenario['topic'], [])
+    keyword_hits = sum(1 for kw in keywords if kw in text)
+
+    # 句子完整性：有没有完整的陈述句或问句
+    full_sentences = re.findall(r'[^。！？\n]{8,}[。！？\n]', text)
+    sentence_score = min(len(full_sentences), 3)  # 最多3分
+
+    if keyword_hits >= 2 and sentence_score >= 2:
+        accuracy = 2.5
+    elif keyword_hits >= 1 and sentence_score >= 1:
+        accuracy = 2.0
+    elif keyword_hits >= 1 or sentence_score >= 1:
+        accuracy = 1.5
+    elif keyword_hits == 0 and len(text) < 10:
+        accuracy = 0.5
+    else:
+        accuracy = 1.0
+
+    # --- 维度B：表达清晰度 ---
+    clarity = 1.5 if sentence_score >= 2 else (1.0 if sentence_score == 1 else 0.5)
+
+    # --- 维度C：客户需求匹配（关键词命中率换算）---
+    # 命中越多说明越切题
+    if keyword_hits >= 3:
+        match = 2.5
+    elif keyword_hits == 2:
+        match = 2.0
+    elif keyword_hits == 1:
+        match = 1.5
+    elif keyword_hits == 0 and len(text) > 0:
+        match = 1.0  # 没命中但有内容
+    else:
+        match = 0.5
+
+    # --- 维度D：专业度 ---
+    medical_terms = [
+        "子宫内膜异位症", "内异症", "巧克力囊肿", "腺肌症",
+        "GnRH", "地诺孕素", "孕激素", "GnRH-a",
+        "病灶", "复发率", "缓解率", "循证", "指南",
+        "月经", "痛经", "不孕", "手术", "联合",
+        "副作用", "不良反应", "安全性", "耐受性",
+        "剂量", "疗程", "处方", "医保", "适应症"
     ]
-    
-    reply = call_zhipu_ai(messages)
-    return reply if reply else "嗯，继续说，我在听。"
+    medical_hit = sum(1 for term in medical_terms if term in text)
 
-# ============ 主处理函数 ============
-def handle_user_message(user_id, message_text, msg_id):
-    """处理用户消息"""
-    message_text = message_text.strip()
-    
-    # 开始练习
-    if message_text in ['开始练习', 'start', '开始', '开始对练']:
-        # 清除旧会话
-        if user_id in user_sessions:
-            old_session_id = user_sessions[user_id]
-            delete_session_file(old_session_id)
-            if old_session_id in sessions:
-                del sessions[old_session_id]
-            del user_sessions[user_id]
-        
-        return """👋 欢迎开始维宝宁销售话术对练！
+    if medical_hit >= 2:
+        professionalism = 2.0
+    elif medical_hit == 1:
+        professionalism = 1.5
+    elif medical_hit == 0 and len(text) > 20:
+        professionalism = 1.0
+    else:
+        professionalism = 0.5
 
-请选择医生角色（回复数字 1-5）：
+    # --- 加分项 ---
+    bonus = 0.0
+    # 提及具体数据/研究加分
+    if re.search(r'\d+[%％例]', text):
+        bonus += 0.5
+    # 提及竞品/对比加分
+    competitors = ["达菲林", "抑那通", "亮丙瑞林", "避孕药", "地屈孕酮"]
+    if any(c in text for c in competitors):
+        bonus += 0.5
+    # 提及指南/共识加分
+    if any(kw in text for kw in ["指南", "共识", "推荐", "循证"]):
+        bonus += 0.5
 
-1️⃣ 主任级专家 ⭐⭐⭐⭐⭐ - 学术型、严谨、注重证据
-2️⃣ 科室主任 ⭐⭐⭐⭐ - 管理型、务实、时间紧  
-3️⃣ 主治医师 ⭐⭐⭐ - 实用型、经验导向
-4️⃣ 住院医师 ⭐⭐ - 学习型、听从上级
-5️⃣ 带组专家 ⭐⭐⭐⭐⭐ - 影响力型、决策权高
+    # --- 追问惩罚（核心：被追问次数越多分数越低）---
+    if exchange_count == 1:
+        penalty = 0.0       # 一次性说清，0惩罚
+    elif exchange_count == 2:
+        penalty = 1.0       # 被追问1次，轻惩罚
+    elif exchange_count == 3:
+        penalty = 2.0       # 被追问2次，中惩罚
+    else:
+        penalty = 3.0       # 被追问3次以上，重惩罚
 
-💡 提示：不同医生类型有不同的关注点和提问风格"""
-    
-    # 结束练习
-    if message_text in ['结束', 'stop', '退出']:
-        if user_id in user_sessions:
-            old_session_id = user_sessions[user_id]
-            delete_session_file(old_session_id)
-            if old_session_id in sessions:
-                del sessions[old_session_id]
-            del user_sessions[user_id]
-        return "对练已结束。发送【开始练习】重新开始"
-    
-    # 帮助
-    if message_text in ['帮助', 'help', '?']:
-        return """📖 使用帮助
+    # --- 总分 ---
+    total_score = accuracy + clarity + match + professionalism + bonus - penalty
+    # 分数范围限制在 0-10
+    total_score = max(0.0, min(10.0, round(total_score, 1)))
 
-【开始练习】- 开始新的对练
-【结束】- 结束当前对练
-【帮助】- 查看帮助
+    # --- 反馈文字 ---
+    if total_score >= 9:
+        feedback = "回答非常出色！内容专业、逻辑清晰、切中要害，一次性回应了医生的关切。"
+    elif total_score >= 7.5:
+        feedback = "回答良好，有实质性内容，但还有细节可以深化。"
+    elif total_score >= 6:
+        feedback = "回答基本合格，内容有所欠缺，建议补充具体数据或案例支撑。"
+    elif total_score >= 4:
+        feedback = "回答需要改进，内容较空泛或偏离话题，建议加强产品知识和话术准备。"
+    else:
+        feedback = "回答较差，需要大幅提升。建议重新梳理本轮场景的核心信息点。"
 
-**对练流程**：
-1. 选择医生角色（1-5）
-2. AI医生会根据你的回答智能回复
-3. 如果回答不充分，AI会追问（最多3次）
-4. 每轮结束后给出评分和反馈
-5. 完成8轮后生成最终报告
+    # --- 优点和不足 ---
+    strengths = []
+    improvements = []
 
-**评分维度（每轮10分）**：
-- 内容准确性（0-3分）
-- 表达清晰度（0-2分）
-- 客户需求匹配（0-2分）
-- 专业度（0-2分）
-- 加分项（0-1分）
-- 追问惩罚（-0.5/-1/-2分）"""
-    
-    # 选择医生角色
-    if message_text in ['1', '2', '3', '4', '5'] and (user_id not in user_sessions or user_sessions.get(user_id) == "selecting"):
-        doctor_profile = DOCTOR_PROFILES[message_text]
-        session_id = str(uuid.uuid4())
-        
-        session_data = {
-            'session_id': session_id,
-            'user_id': user_id,
-            'doctor_type': message_text,
-            'doctor_name': doctor_profile['name'],
-            'current_round': 1,
-            'exchange_count': 0,
-            'follow_up_count': 0,
-            'messages': [],
-            'scores': [],
-            'created_at': datetime.now().isoformat()
+    if accuracy >= 2.0:
+        strengths.append("内容准确、切中要害")
+    elif accuracy < 1.5:
+        improvements.append("内容偏离主题或缺乏关键词")
+
+    if clarity >= 1.5:
+        strengths.append("表达清晰有逻辑")
+    else:
+        improvements.append("表达不够清晰，句子结构散乱")
+
+    if match >= 2.0:
+        strengths.append("精准回应医生关切")
+    elif match < 1.5:
+        improvements.append("未有效回应本轮话题")
+
+    if penalty == 0:
+        strengths.append("一次性回答到位")
+    elif penalty >= 2.0:
+        improvements.append(f"被追问{exchange_count - 1}次，信息不完整")
+
+    if medical_hit >= 2:
+        strengths.append("专业术语运用得当")
+
+    if bonus >= 1.0:
+        strengths.append("引用了数据或对比分析")
+
+    return {
+        "round": current_round,
+        "topic": scenario['topic'],
+        "score": total_score,
+        "exchange_count": exchange_count,
+        "details": {
+            "内容准确性": accuracy,
+            "表达清晰度": clarity,
+            "客户需求匹配": match,
+            "专业度": professionalism,
+            "加分项": bonus,
+            "追问惩罚": -penalty
+        },
+        "feedback": feedback,
+        "strengths": strengths,
+        "improvements": improvements
+    }
+
+
+def generate_summary(session_data):
+    evaluations = session_data.get("evaluations", [])
+    total_score = sum(e.get("score", 0) for e in evaluations)
+    max_score = len(evaluations) * 10 if evaluations else 80
+    avg_score = total_score / len(evaluations) if evaluations else 0
+
+    doctor = DOCTOR_PROFILES[session_data["doctor_type"]]
+
+    if avg_score >= 9:
+        level = "优秀"
+        level_emoji = "🏆"
+    elif avg_score >= 7.5:
+        level = "良好"
+        level_emoji = "👍"
+    elif avg_score >= 6:
+        level = "及格"
+        level_emoji = "📖"
+    else:
+        level = "需改进"
+        level_emoji = "💪"
+
+    summary = f"""{level_emoji} 拜访演练总结报告
+
+📊 总体表现
+• 医生角色：{doctor['title']} {doctor['name']}
+• 难度等级：{"⭐" * doctor['difficulty']}
+• 总得分：{total_score:.1f}/{max_score}
+• 平均分：{avg_score:.1f}/10
+• 综合评级：{level}
+
+📝 各轮表现
+"""
+
+    for i, eval_data in enumerate(evaluations, 1):
+        scenario = DIALOGUE_SCENARIOS[i-1]
+        score = eval_data.get('score', 0)
+        stars = "⭐" * int(score // 2)
+        if score % 2 >= 1:
+            stars += "✨"
+
+        summary += f"""
+第{i}轮：{scenario['topic']}
+得分：{score}/10 {stars}
+对话次数：{eval_data.get('exchange_count', 1)}次
+评价：{eval_data.get('feedback', '无')[:60]}...
+"""
+
+    all_strengths = []
+    all_improvements = []
+    for e in evaluations:
+        all_strengths.extend(e.get('strengths', []))
+        all_improvements.extend(e.get('improvements', []))
+
+    unique_strengths = list(dict.fromkeys(all_strengths))[:3]
+    unique_improvements = list(dict.fromkeys(all_improvements))[:3]
+
+    summary += """
+💡 总体建议
+
+继续保持：
+"""
+    for s in unique_strengths:
+        summary += f"• {s}\n"
+
+    summary += """
+重点提升：
+"""
+    for i in unique_improvements:
+        summary += f"• {i}\n"
+
+    summary += f"""
+下次目标：争取总分达到 {min(total_score + 15, max_score):.1f} 分以上
+
+生成时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+"""
+
+    return summary
+
+
+def send_feishu_message(open_id, user_id, reply_text):
+    try:
+        token_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        token_resp = requests.post(
+            token_url,
+            json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET},
+            timeout=10
+        )
+        token_data = token_resp.json()
+
+        token = token_data.get("tenant_access_token")
+        if not token:
+            print(f"Failed to get token: {token_data}")
+            return
+
+        send_url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
         }
-        
+
+        receive_id = open_id if open_id else user_id
+        clean_reply = reply_text.replace("【推进到下一轮】", "")
+
+        max_length = 3000
+        if len(clean_reply) > max_length:
+            parts = [clean_reply[i:i+max_length] for i in range(0, len(clean_reply), max_length)]
+            for part in parts:
+                payload = {
+                    "receive_id": receive_id,
+                    "content": json.dumps({"text": part}, ensure_ascii=False),
+                    "msg_type": "text"
+                }
+                requests.post(send_url, headers=headers, json=payload, timeout=10)
+        else:
+            payload = {
+                "receive_id": receive_id,
+                "content": json.dumps({"text": clean_reply}, ensure_ascii=False),
+                "msg_type": "text"
+            }
+            requests.post(send_url, headers=headers, json=payload, timeout=10)
+
+    except Exception as e:
+        print(f"Send feishu message error: {e}")
+
+
+def process_message_async(open_id, user_id, text, message_id):
+    try:
+        if message_id in processed_messages:
+            print(f"Message {message_id} already processed (memory)")
+            return
+
+        try:
+            if os.path.exists(PROCESSED_MESSAGES_FILE):
+                with open(PROCESSED_MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if message_id in data:
+                        print(f"Message {message_id} already processed (file)")
+                        return
+        except:
+            pass
+
+        processed_messages.add(message_id)
+        save_processed_message(message_id)
+
+        reply_text = generate_reply(open_id, user_id, text)
+
+        if not reply_text:
+            reply_text = "抱歉，系统处理出错，请发送'开始'重新训练。"
+
+        send_feishu_message(open_id, user_id, reply_text)
+    except Exception as e:
+        print(f"ERROR in process_message_async: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            send_feishu_message(open_id, user_id, f"系统错误: {str(e)[:50]}。请发送'开始'重新训练。")
+        except:
+            pass
+
+
+def generate_reply(open_id, user_id, text):
+    try:
+        return _do_generate_reply(open_id, user_id, text)
+    except Exception as e:
+        print(f"ERROR in generate_reply: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"系统错误: {str(e)[:50]}。请发送'开始'重新训练。"
+
+
+def _do_generate_reply(open_id, user_id, text):
+    if text in ["/start", "开始", "开始训练", "开始练习"]:
+        reply_text = """🎯 请选择医生角色开始训练：
+
+1️⃣ 主任级专家 ⭐⭐⭐⭐⭐
+   学术型、严谨、注重循证医学证据
+
+2️⃣ 科室主任 ⭐⭐⭐⭐
+   管理型、务实、关注科室效益
+
+3️⃣ 主治医师 ⭐⭐⭐
+   实用型、经验导向
+
+4️⃣ 住院医师 ⭐⭐
+   学习型、听从上级
+
+5️⃣ 带组专家 ⭐⭐⭐⭐⭐
+   影响力型、决策权高
+
+请回复数字 1-5 选择医生"""
+        user_sessions[user_id] = "selecting_doctor"
+        return reply_text
+
+    elif text in ["1", "2", "3", "4", "5"] and user_sessions.get(user_id) == "selecting_doctor":
+        doctor_map = {"1": "主任级专家", "2": "科室主任", "3": "主治医师", "4": "住院医师", "5": "带组专家"}
+        doctor_type = doctor_map.get(text, "副主任医师")
+
+        session_id = str(uuid.uuid4())
+        session_data = {
+            "session_id": session_id,
+            "user_id": user_id,
+            "doctor_type": doctor_type,
+            "current_round": 1,
+            "current_round_data": {
+                "exchange_count": 0,
+                "messages": [],
+                "evaluated": False
+            },
+            "all_rounds_messages": {},
+            "evaluations": [],
+            "start_time": datetime.now().isoformat(),
+            "status": "active"
+        }
         sessions[session_id] = session_data
         user_sessions[user_id] = session_id
-        save_session_to_file(session_id, session_data)
-        
-        # 获取医生开场白
+
         scenario = DIALOGUE_SCENARIOS[0]
-        
-        return f"""✅ 已选择：{doctor_profile['title']} {doctor_profile['stars']}
-类型：{doctor_profile['type']}
-难度：{doctor_profile['stars']}
+        doctor = DOCTOR_PROFILES[doctor_type]
+        opening = scenario['opening']
 
-🎬 对练开始！
+        session_data["current_round_data"]["messages"].append({
+            "role": "doctor",
+            "content": opening
+        })
 
-👨‍⚕️ **医生说：**
-{scenario['doctor_init']}
+        return f"""🎯 销售话术对练开始！
+
+👨‍⚕️ 医生角色：{doctor['title']} {doctor['name']}
+难度：{'⭐' * doctor['difficulty']}
+
+{doctor['name']}：{opening}
 
 💡 第1轮/共8轮：{scenario['topic']}
-🎯 目标：{scenario['goal']}
+🎯 目标：{scenario['goal']}"""
 
-💬 **请回复你的开场白...**"""
-    
-    # 如果没有活跃会话
-    if user_id not in user_sessions or user_sessions[user_id] not in sessions:
-        return "发送【开始练习】开始新的对练，或发送【帮助】查看使用说明"
-    
-    # 处理对话
-    session_id = user_sessions[user_id]
-    session_data = sessions[session_id]
-    
-    # 记录用户消息
-    session_data['messages'].append({
-        'role': 'user',
-        'content': message_text,
-        'timestamp': datetime.now().isoformat()
-    })
-    
-    # 生成医生回复
-    doctor_reply = generate_doctor_reply(session_data, message_text)
-    
-    # 判断是否推进
-    should_advance = should_advance_round(doctor_reply, session_data.get('exchange_count', 0))
-    
-    if should_advance:
-        # 本轮结束，进行评估
-        follow_up_count = session_data.get('follow_up_count', 0)
-        
-        # 找到医生的问题（去掉推进标记）
-        doctor_question = doctor_reply.replace("【推进到下一轮】", "").strip()
-        
-        # 评估
-        evaluation = evaluate_response(message_text, doctor_question, session_data['current_round'], follow_up_count)
-        
-        # 记录评分
-        session_data['scores'].append({
-            'round': session_data['current_round'],
-            'score': evaluation['total_score'],
-            'evaluation': evaluation
-        })
-        
-        # 更新会话
-        session_data['current_round'] += 1
-        session_data['exchange_count'] = 0
-        session_data['follow_up_count'] = 0
-        
-        # 记录医生回复
-        session_data['messages'].append({
-            'role': 'doctor',
-            'content': doctor_reply,
-            'timestamp': datetime.now().isoformat()
-        })
-        
-        save_session_to_file(session_id, session_data)
-        
-        # 检查是否完成8轮
-        if session_data['current_round'] > 8:
-            # 生成最终报告
-            total_score = sum(s['score'] for s in session_data['scores']) / len(session_data['scores'])
-            
-            report = f"""🎉 对练完成！
+    elif text in ["/help", "帮助", "?", "？"]:
+        return """🎯 维宝宁销售培训机器人
 
-📊 **综合评分：{total_score:.1f}/10**
+【训练说明】
+• 共8轮对话，每轮可以有多轮交流
+• 医生会根据你的回答质量决定是否追问
+• 每轮结束给一次评分（满分10分）
+• 追问次数会影响评分（被追问越多，扣分越多）
+• 完成后生成总结报告
 
-**各轮得分：**
-"""
-            for s in session_data['scores']:
-                report += f"第{s['round']}轮：{s['score']}/10\n"
-            
-            # 清理会话
-            delete_session_file(session_id)
-            del sessions[session_id]
+发送「开始」即可开始训练！"""
+
+    elif user_sessions.get(user_id) == "selecting_doctor":
+        return "请选择医生：回复 1-5 选择医生角色"
+
+    elif user_id in user_sessions:
+        session_id = user_sessions[user_id]
+
+        if session_id in ["selecting_doctor", None]:
+            return "会话异常，请发送「开始」重新开始"
+
+        if session_id not in sessions:
             del user_sessions[user_id]
-            
-            return report
-        
-        # 继续下一轮
-        next_scenario = DIALOGUE_SCENARIOS[session_data['current_round'] - 1]
-        clean_reply = doctor_reply.replace("【推进到下一轮】", "").strip()
-        
-        reply = f"""👨‍⚕️ **医生说：**
-{clean_reply}
+            return "会话已过期，请发送「开始」重新开始"
 
----
-📊 **第{session_data['current_round'] - 1}轮评分：{evaluation['total_score']}/10（等级{evaluation['grade']}）**
-💬 **反馈：** {evaluation['feedback']}
+        session = sessions[session_id]
+        current_round = session["current_round"]
+        round_data = session["current_round_data"]
 
-💡 第{session_data['current_round']}轮/共8轮：{next_scenario['topic']}
-🎯 目标：{next_scenario['goal']}
+        if current_round > 8:
+            summary = generate_summary(session)
+            del user_sessions[user_id]
+            return summary + "\n\n🎉 训练结束！发送「开始」可重新练习。"
 
-💬 **请继续回复...**"""
-        
-        return reply
-    
-    else:
-        # 继续本轮，追问
-        session_data['exchange_count'] += 1
-        session_data['follow_up_count'] += 1
-        
-        # 记录医生回复
-        session_data['messages'].append({
-            'role': 'doctor',
-            'content': doctor_reply,
-            'timestamp': datetime.now().isoformat()
+        round_data["exchange_count"] += 1
+        round_data["messages"].append({
+            "role": "user",
+            "content": text,
+            "exchange": round_data["exchange_count"]
         })
-        
-        save_session_to_file(session_id, session_data)
-        
-        current_scenario = DIALOGUE_SCENARIOS[session_data['current_round'] - 1]
-        
-        reply = f"""👨‍⚕️ **医生说：**
-{doctor_reply}
 
----
-💡 第{session_data['current_round']}轮/共8轮：{current_scenario['topic']}
-🎯 目标：{current_scenario['goal']}
+        # 生成医生回复（含质量评估）
+        doctor_reply = generate_doctor_reply(text, session, current_round)
 
-💬 **请补充回答...**"""
-        
-        return reply
+        round_data["messages"].append({
+            "role": "doctor",
+            "content": doctor_reply,
+            "exchange": round_data["exchange_count"]
+        })
 
-# ============ Flask路由 ============
-@app.route('/')
-def index():
-    return jsonify({'status': 'ok', 'version': 'v3.0', 'features': ['5医生角色', '智能追问', '自然过渡', '新评分维度']})
+        if "all_rounds_messages" not in session:
+            session["all_rounds_messages"] = {}
+        session["all_rounds_messages"][str(current_round)] = round_data["messages"].copy()
 
-@app.route('/webhook/feishu', methods=['POST', 'GET'])
-def webhook():
+        # 质量评估结果同步传给推进判断
+        quality_result = assess_user_answer_quality(text, DIALOGUE_SCENARIOS[current_round - 1]['topic'], round_data["exchange_count"])
+        should_advance = should_advance_round(doctor_reply, round_data["exchange_count"], quality_result)
+
+        if should_advance:
+            evaluation = evaluate_round(session, current_round, text, doctor_reply)
+            session["evaluations"].append(evaluation)
+
+            clean_doctor_reply = doctor_reply.replace("【推进到下一轮】", "").strip()
+            if clean_doctor_reply.endswith(("?", "？")):
+                for i in range(len(clean_doctor_reply) - 1, -1, -1):
+                    if clean_doctor_reply[i] in "。.！!":
+                        clean_doctor_reply = clean_doctor_reply[:i+1]
+                        break
+
+            session["current_round"] = current_round + 1
+            session["current_round_data"] = {
+                "exchange_count": 0,
+                "messages": [],
+                "evaluated": False
+            }
+
+            if current_round == 8:
+                summary = generate_summary(session)
+                del user_sessions[user_id]
+                score = evaluation.get('score', 0)
+                feedback = evaluation.get('feedback', '')[:80]
+
+                return f"""👨‍⚕️ {clean_doctor_reply}
+
+📊 第8轮评分：{score}/10
+💬 反馈：{feedback}
+
+{summary}
+
+🎉 训练结束！发送「开始」可重新练习。"""
+            else:
+                next_round = session["current_round"]
+                next_scenario = DIALOGUE_SCENARIOS[next_round - 1]
+                score = evaluation.get('score', 0)
+                feedback = evaluation.get('feedback', '')[:80]
+
+                return f"""👨‍⚕️ {clean_doctor_reply}
+
+📊 第{current_round}轮评分：{score}/10
+💬 反馈：{feedback}
+
+💡 第{next_round}轮/共8轮：{next_scenario['topic']}
+🎯 目标：{next_scenario['goal']}"""
+        else:
+            scenario = DIALOGUE_SCENARIOS[current_round - 1]
+            exchange_info = f"（第{round_data['exchange_count']}次对话）" if round_data['exchange_count'] > 1 else ""
+
+            clean_doctor_reply = doctor_reply.replace("【推进到下一轮】", "").strip()
+
+            return f"""👨‍⚕️ {clean_doctor_reply}
+
+💡 第{current_round}轮/共8轮：{scenario['topic']} {exchange_info}
+🎯 目标：{scenario['goal']}"""
+
+    else:
+        return "请先发送「开始」或「/start」开始训练"
+
+
+@app.route("/webhook/feishu", methods=["POST"])
+def feishu_webhook():
+    return feishu_chat()
+
+
+@app.route("/api/feishu/chat", methods=["POST"])
+def feishu_chat():
+    raw_data = request.get_data(as_text=True)
+    data = json.loads(raw_data) if raw_data else {}
+
+    if "challenge" in data:
+        return jsonify({"challenge": data["challenge"]})
+
+    event = data.get("event", {})
+    message = event.get("message", {})
+    sender = event.get("sender", {})
+    sender_id = sender.get("sender_id", {})
+    user_id = sender_id.get("user_id", "")
+    open_id = sender_id.get("open_id", "")
+    message_id = message.get("message_id", "")
+
+    content_str = message.get("content", "{}")
     try:
-        if request.method == 'GET':
-            return jsonify({'status': 'ok'})
-        
-        data = request.get_json() or {}
-        
-        # 处理挑战验证
-        if 'challenge' in data:
-            return jsonify({'challenge': data['challenge']})
-        
-        header = data.get('header', {})
-        event = data.get('event', {})
-        event_type = header.get('event_type', '')
-        
-        if event_type in ['im.message.receive_v1', 'im.message.p2p_msg']:
-            message = event.get('message', {})
-            sender = event.get('sender', {})
-            
-            if message.get('message_type') == 'text':
-                try:
-                    content = json.loads(message.get('content', '{}'))
-                    text = content.get('text', '').strip()
-                except:
-                    text = str(message.get('content', '')).strip()
-                
-                # 清理@机器人的内容
-                text = text.replace('@_user_1', '').replace('@维宝宁销售训练助手', '').strip()
-                
-                user_id = sender.get('sender_id', {}).get('open_id', '')
-                msg_id = message.get('message_id', '')
-                
-                # 消息去重
-                if msg_id in processed_messages:
-                    return jsonify({'status': 'ok'})
-                processed_messages.add(msg_id)
-                save_processed_message(msg_id)
-                
-                if text and user_id:
-                    reply = handle_user_message(user_id, text, msg_id)
-                    send_feishu_message(user_id, msg_id, reply)
-        
-        return jsonify({'status': 'ok'})
-    except Exception as e:
-        import traceback
-        print(f"Error: {e}")
-        print(traceback.format_exc())
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        content = json.loads(content_str) if isinstance(content_str, str) else content_str
+    except:
+        content = {}
+    text = content.get("text", "").strip()
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    if message_id in processed_messages:
+        print(f"Duplicate message blocked (memory): {message_id}")
+        return jsonify({"code": 0, "msg": "success"})
+
+    try:
+        if os.path.exists(PROCESSED_MESSAGES_FILE):
+            with open(PROCESSED_MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                file_data = json.load(f)
+                if message_id in file_data:
+                    print(f"Duplicate message blocked (file): {message_id}")
+                    processed_messages.add(message_id)
+                    return jsonify({"code": 0, "msg": "success"})
+    except Exception as e:
+        print(f"Error checking processed messages file: {e}")
+
+    thread = threading.Thread(
+        target=process_message_async,
+        args=(open_id, user_id, text, message_id)
+    )
+    thread.daemon = True
+    thread.start()
+
+    return jsonify({"code": 0, "msg": "success"})
+
+
+@app.route("/api/start", methods=["POST"])
+def start_session():
+    data = request.json or {}
+    user_id = data.get("user_id", "anonymous")
+    doctor_type = data.get("doctor_type", "副主任医师")
+
+    if doctor_type not in DOCTOR_PROFILES:
+        doctor_type = "副主任医师"
+
+    session_id = str(uuid.uuid4())
+    session_data = {
+        "session_id": session_id,
+        "user_id": user_id,
+        "doctor_type": doctor_type,
+        "current_round": 1,
+        "current_round_data": {
+            "exchange_count": 0,
+            "messages": [],
+            "evaluated": False
+        },
+        "evaluations": [],
+        "start_time": datetime.now().isoformat(),
+        "status": "active"
+    }
+    sessions[session_id] = session_data
+
+    scenario = DIALOGUE_SCENARIOS[0]
+    doctor = DOCTOR_PROFILES[doctor_type]
+    opening = scenario['opening']
+
+    session_data["current_round_data"]["messages"].append({
+        "role": "doctor",
+        "content": opening
+    })
+
+    return jsonify({
+        "session_id": session_id,
+        "message": f"{doctor['name']}：{opening}",
+        "round": 1,
+        "topic": scenario['topic'],
+        "goal": scenario['goal']
+    })
+
+
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    data = request.json or {}
+    session_id = data.get("session_id")
+    user_message = data.get("message", "")
+
+    if not session_id or session_id not in sessions:
+        return jsonify({"error": "会话不存在"}), 400
+
+    session = sessions[session_id]
+    current_round = session["current_round"]
+    round_data = session["current_round_data"]
+
+    if current_round > 8:
+        return jsonify({"error": "对话已完成"}), 400
+
+    round_data["exchange_count"] += 1
+    round_data["messages"].append({
+        "role": "user",
+        "content": user_message,
+        "exchange": round_data["exchange_count"]
+    })
+
+    doctor_reply = generate_doctor_reply(user_message, session, current_round)
+
+    round_data["messages"].append({
+        "role": "doctor",
+        "content": doctor_reply,
+        "exchange": round_data["exchange_count"]
+    })
+
+    quality_result = assess_user_answer_quality(user_message, DIALOGUE_SCENARIOS[current_round - 1]['topic'], round_data["exchange_count"])
+    should_advance = should_advance_round(doctor_reply, round_data["exchange_count"], quality_result)
+
+    result = {
+        "session_id": session_id,
+        "round": current_round,
+        "doctor_reply": doctor_reply.replace("【推进到下一轮】", "").strip(),
+        "exchange_count": round_data["exchange_count"],
+        "advanced": should_advance
+    }
+
+    if should_advance:
+        evaluation = evaluate_round(session, current_round)
+        session["evaluations"].append(evaluation)
+
+        result["evaluation"] = evaluation
+
+        session["current_round"] = current_round + 1
+        session["current_round_data"] = {
+            "exchange_count": 0,
+            "messages": [],
+            "evaluated": False
+        }
+
+        if current_round == 8:
+            session["status"] = "completed"
+            result["completed"] = True
+            result["summary"] = generate_summary(session)
+        else:
+            next_scenario = DIALOGUE_SCENARIOS[session["current_round"] - 1]
+            result["next_topic"] = next_scenario["topic"]
+            result["next_goal"] = next_scenario["goal"]
+
+    return jsonify(result)
+
+
+@app.route("/api/summary/<session_id>", methods=["GET"])
+def get_summary(session_id):
+    if session_id not in sessions:
+        return jsonify({"error": "会话不存在"}), 404
+
+    session = sessions[session_id]
+    summary = generate_summary(session)
+
+    return jsonify({
+        "session_id": session_id,
+        "summary": summary,
+        "evaluations": session.get("evaluations", [])
+    })
+
+
+@app.route("/api/doctors", methods=["GET"])
+def list_doctors():
+    doctors = []
+    for key, profile in DOCTOR_PROFILES.items():
+        doctors.append({
+            "type": key,
+            "name": profile["name"],
+            "title": profile["title"],
+            "difficulty": profile["difficulty"],
+            "strictness": profile["strictness"]
+        })
+
+    return jsonify({"doctors": doctors})
+
+
+@app.route("/")
+def index():
+    return "维宝宁销售培训机器人 - 运行正常"
+
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
