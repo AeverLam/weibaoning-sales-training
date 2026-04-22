@@ -212,6 +212,47 @@ TOPIC_KEYWORDS = {
 }
 
 # ============================================================
+# 辅助函数：评估单条回答的质量分数（用于多轮回答选最优）
+# ============================================================
+def assess_answer_quality_score(user_message, scenario_topic):
+    """返回0-10的质量分数，用于比较多条回答"""
+    text = user_message.strip()
+    if not text:
+        return 0
+    
+    # 字数得分
+    word_count = len(text)
+    word_score = min(word_count / 50, 2)  # 最多2分
+    
+    # 句子数得分
+    sentences = re.findall(r'[^。！？\n]+[。！？\n]?', text)
+    meaningful_sentences = [s for s in sentences if len(s.strip()) > 3]
+    sentence_score = min(len(meaningful_sentences), 2)  # 最多2分
+    
+    # 关键词得分
+    keywords = TOPIC_KEYWORDS.get(scenario_topic, [])
+    keyword_hits = sum(1 for kw in keywords if kw in text)
+    keyword_score = min(keyword_hits * 0.5, 3)  # 最多3分
+    
+    # 专业术语得分
+    medical_terms = [
+        "子宫内膜异位症", "内异症", "巧克力囊肿", "腺肌症",
+        "GnRH", "地诺孕素", "孕激素", "GnRH-a",
+        "病灶", "复发率", "缓解率", "循证", "指南",
+        "月经", "痛经", "不孕", "手术", "联合",
+        "副作用", "不良反应", "安全性", "耐受性",
+        "剂量", "疗程", "处方", "医保", "适应症"
+    ]
+    medical_hit = sum(1 for term in medical_terms if term in text)
+    medical_score = min(medical_hit * 0.5, 2)  # 最多2分
+    
+    # 数据提及加分
+    data_score = 0.5 if re.search(r'\d+[%％例]', text) else 0
+    
+    total = word_score + sentence_score + keyword_score + medical_score + data_score
+    return min(total, 10)
+
+# ============================================================
 # 修复1：追问机制——语义级质量评估，不再只看长度
 # ============================================================
 def assess_user_answer_quality(user_message, scenario_topic, exchange_count):
@@ -413,12 +454,13 @@ def generate_doctor_reply(user_message, session, current_round):
         strategy_instruction = f"""【策略：深入追问（用户回答质量问题：{vagueness_desc}）】
 用户说了「{user_message}」，但内容空泛或缺乏具体信息。
 
-追问原则：顺着用户的回答深入挖掘，不要横向跳转话题！
+追问原则：顺着用户的回答深入挖掘，不要横向跳转话题，禁止重复提问！
 
 追问要求：
 1. **必须基于用户回答的具体内容追问**——从用户提到的某个点深入问下去
 2. **禁止横向跳转**：不要跳到用户没提到的新话题
-3. **追问要有深度**：问"为什么""具体怎么操作""数据是多少"，而不是换个角度问同类问题
+3. **禁止重复提问**：不要问用户已经回答过的问题（如用户已说"每28天一次"，不要问"注射频率是多少"）
+4. **追问要有深度**：问"为什么""具体怎么操作""数据是多少"，而不是换个角度问同类问题
 
 正确示例（顺着深入）：
 - 用户说"通过抑制垂体-卵巢轴"→ "具体是怎么抑制垂体的？是占据受体还是减少分泌？"
@@ -429,7 +471,10 @@ def generate_doctor_reply(user_message, session, current_round):
 - 用户说"抑制垂体-卵巢轴"→ "那微球技术怎么实现零突释？"（跳到了微球，不是深入机制）
 - 用户说"微球技术"→ "那临床数据怎么样？"（跳到了数据，不是深入微球）
 
-4. 不要推进轮次，必须追问
+错误示例（重复提问）：
+- 用户已说"每28天注射一次"→ "注射频率是多少？"（重复问同样的问题）
+
+5. 不要推进轮次，必须追问
 
 推进到下一轮"""
     else:  # poor 或 acceptable
@@ -650,7 +695,7 @@ def evaluate_round(session, current_round, user_message="", doctor_reply=""):
     - 客户需求匹配（关键词命中数）
     - 专业度（是否使用专业术语）
     - 追问惩罚（exchange_count 越多扣越多）
-    不再：纯长度决定一切
+    - 综合评分：考虑本轮所有用户回答的最佳质量
     """
     round_data = session["current_round_data"]
     exchange_count = round_data["exchange_count"]
@@ -658,7 +703,22 @@ def evaluate_round(session, current_round, user_message="", doctor_reply=""):
     doctor = DOCTOR_PROFILES[doctor_type]
     scenario = DIALOGUE_SCENARIOS[current_round - 1]
 
-    text = user_message.strip()
+    # 获取本轮所有用户回答
+    user_messages = [msg["content"] for msg in round_data["messages"] if msg["role"] == "user"]
+    
+    # 如果有多条回答，取质量最好的一条作为代表
+    if len(user_messages) > 1:
+        # 评估每条回答的质量，取最高分
+        best_score = 0
+        best_text = user_message.strip()
+        for msg in user_messages:
+            msg_score = assess_answer_quality_score(msg, scenario['topic'])
+            if msg_score > best_score:
+                best_score = msg_score
+                best_text = msg
+        text = best_text
+    else:
+        text = user_message.strip()
 
     # --- 维度A：内容准确性（关键词命中）---
     keywords = TOPIC_KEYWORDS.get(scenario['topic'], [])
