@@ -1088,8 +1088,17 @@ def _do_generate_reply(open_id, user_id, text):
             else:
                 next_round = session["current_round"]
                 next_scenario = DIALOGUE_SCENARIOS[next_round - 1]
+                next_opening = next_scenario.get('opening', '')
                 score = evaluation.get('score', 0)
                 feedback = evaluation.get('feedback', '')[:80]
+
+                # 将下一轮开场问题加入会话
+                if next_opening:
+                    session["current_round_data"]["messages"].append({
+                        "role": "doctor",
+                        "content": next_opening,
+                        "exchange": 0
+                    })
 
                 return f"""👨‍⚕️ {clean_doctor_reply}
 
@@ -1097,7 +1106,9 @@ def _do_generate_reply(open_id, user_id, text):
 💬 反馈：{feedback}
 
 💡 第{next_round}轮/共8轮：{next_scenario['topic']}
-🎯 目标：{next_scenario['goal']}"""
+🎯 目标：{next_scenario['goal']}
+
+👨‍⚕️ {doctor['name']}：{next_opening}"""
         else:
             scenario = DIALOGUE_SCENARIOS[current_round - 1]
             exchange_info = f"（第{round_data['exchange_count']}次对话）" if round_data['exchange_count'] > 1 else ""
