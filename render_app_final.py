@@ -1103,9 +1103,9 @@ def _do_generate_reply(open_id, user_id, text):
                         "exchange": 0
                     })
 
-                return f"""👨‍⚕️ {clean_doctor_reply}
-
-📊 第{current_round}轮评分：{score}/10
+                # 推进时只显示：本轮评分反馈 + 下一轮开场问题
+                # 不显示当前轮的医生回复（避免和第4轮问题重复）
+                return f"""📊 第{current_round}轮评分：{score}/10
 💬 反馈：{feedback}
 
 💡 第{next_round}轮/共8轮：{next_scenario['topic']}
