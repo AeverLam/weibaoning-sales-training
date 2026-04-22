@@ -78,6 +78,7 @@ load_product_knowledge()
 def get_feishu_access_token():
     """获取飞书应用访问令牌"""
     try:
+        print(f"[BITABLE] Getting access token... App ID: {FEISHU_APP_ID[:10]}...")
         url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
         headers = {
             "Content-Type": "application/json"
@@ -87,14 +88,22 @@ def get_feishu_access_token():
             "app_secret": FEISHU_APP_SECRET
         }
         resp = requests.post(url, headers=headers, json=data, timeout=10)
+        print(f"[BITABLE] Token API status: {resp.status_code}")
+        
         if resp.status_code == 200:
             result = resp.json()
+            print(f"[BITABLE] Token API response code: {result.get('code')}")
             if result.get("code") == 0:
-                return result.get("app_access_token")
-        print(f"Failed to get access token: {resp.text}")
+                token = result.get("app_access_token")
+                print(f"[BITABLE] ✅ Got access token: {token[:20]}...")
+                return token
+            else:
+                print(f"[BITABLE] ❌ Token API error: {result.get('msg')}")
+        else:
+            print(f"[BITABLE] ❌ Token API failed: {resp.text[:200]}")
         return None
     except Exception as e:
-        print(f"Error getting access token: {e}")
+        print(f"[BITABLE] ❌ Error getting access token: {e}")
         return None
 
 
@@ -176,16 +185,24 @@ def save_training_record(session, user_id, user_name=""):
                 }
             }
             
+            print(f"[BITABLE] Writing to table... URL: {url[:60]}...")
+            print(f"[BITABLE] Record data: {json.dumps(record_data, ensure_ascii=False)[:200]}...")
+            
             # 调用飞书API写入记录
             resp = requests.post(url, headers=headers, json=record_data, timeout=10)
+            print(f"[BITABLE] Write API status: {resp.status_code}")
+            
             if resp.status_code == 200:
                 result = resp.json()
+                print(f"[BITABLE] Write API response code: {result.get('code')}")
                 if result.get("code") == 0:
                     print(f"[TRAINING_RECORD] ✅ Saved to Bitable - User: {user_id}, Score: {total_score}")
                 else:
                     print(f"[TRAINING_RECORD] ⚠️ Bitable API error: {result.get('msg')}")
+                    print(f"[BITABLE] Full error response: {resp.text[:500]}")
             else:
                 print(f"[TRAINING_RECORD] ⚠️ Failed to save to Bitable: {resp.status_code}")
+                print(f"[BITABLE] Error response: {resp.text[:500]}")
         
         # 同时保存到本地文件作为备份
         record_file = "/tmp/training_records.jsonl"
