@@ -684,15 +684,16 @@ def evaluate_round(session, current_round, user_message="", doctor_reply=""):
     if any(kw in text for kw in ["指南", "共识", "推荐", "循证"]):
         bonus += 0.5
 
-    # --- 追问惩罚（核心：被追问次数越多分数越低）---
+    # --- 追问惩罚（被追问次数越多分数越低，但惩罚力度降低）---
+    # 修复：降低惩罚权重，避免回答很好但被追问多次导致分数过低
     if exchange_count == 1:
         penalty = 0.0       # 一次性说清，0惩罚
     elif exchange_count == 2:
-        penalty = 1.0       # 被追问1次，轻惩罚
+        penalty = 0.5       # 被追问1次，轻微惩罚（原1.0）
     elif exchange_count == 3:
-        penalty = 2.0       # 被追问2次，中惩罚
+        penalty = 1.0       # 被追问2次，轻惩罚（原2.0）
     else:
-        penalty = 3.0       # 被追问3次以上，重惩罚
+        penalty = 1.5       # 被追问3次以上，中等惩罚（原3.0）
 
     # --- 总分 ---
     total_score = accuracy + clarity + match + professionalism + bonus - penalty
