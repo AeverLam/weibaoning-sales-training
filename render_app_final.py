@@ -194,8 +194,8 @@ DIALOGUE_SCENARIOS = [
         "round": 8,
         "topic": "达成共识与后续",
         "goal": "促成试用或进一步交流",
-        "key_points": ["试用邀请", "资料提供", "后续跟进"],
-        "opening": "基于我们今天的交流，您愿意让合适的患者试用维宝宁吗？"
+        "key_points": ["试用意愿", "资料提供", "后续跟进"],
+        "opening": "听了你的介绍，维宝宁在疼痛控制和安全性方面的特点确实值得关注。我想让合适的患者先试试，实际使用中有什么需要特别注意的吗？"
     }
 ]
 
@@ -374,8 +374,27 @@ def generate_doctor_reply(user_message, session, current_round):
     keyword_hits = quality_result["keyword_hits"]
     vagueness_flags = quality_result["vagueness_flags"]
 
+    # --- 第8轮特殊处理：医生表达试用意愿，结束对话 ---
+    if current_round == 8:
+        strategy_instruction = f"""【策略：第8轮-表达试用意愿并结束】
+这是最后一轮，用户已经同意试用维宝宁。
+
+医生回复要求：
+1. 表达愿意试用的态度（如"我觉得可以试试看"、"我先让合适的患者试试"）
+2. 简单提及后续跟进（如"有问题我再请教你"、"用一段时间看看效果"）
+3. 以句号结束，不要追问
+4. 末尾添加【推进到下一轮】（触发结束）
+
+正确示例：
+- "好的，我觉得可以先让几个合适的患者试试看，用一段时间观察一下效果。后续有问题再请教你。【推进到下一轮】"
+- "听你这么介绍，我想先试试，让术后复发的患者用用看。到时候再交流使用体会。【推进到下一轮】"
+
+禁止：
+- 不要追问技术问题（如"骨密度怎么监测"）
+- 不要问"你愿意吗"（这是代表说的话）
+- 不要以问句结束"""
     # --- 根据质量决定回复策略，并写入 system prompt ---
-    if quality == "good":
+    elif quality == "good":
         strategy = "GOOD"
         strategy_instruction = f"""【策略：认可+总结+过渡到下一轮】
 用户刚才的回答质量好（{reason}）。
