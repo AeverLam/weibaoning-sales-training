@@ -199,6 +199,35 @@ DIALOGUE_SCENARIOS = [
     }
 ]
 
+# ============ 知识库加载 ============
+PRODUCT_KNOWLEDGE_FILE = os.path.join(os.path.dirname(__file__), 'references', 'product-knowledge.md')
+PRODUCT_KNOWLEDGE = ""
+
+def load_product_knowledge():
+    """加载产品知识库"""
+    global PRODUCT_KNOWLEDGE
+    try:
+        if os.path.exists(PRODUCT_KNOWLEDGE_FILE):
+            with open(PRODUCT_KNOWLEDGE_FILE, 'r', encoding='utf-8') as f:
+                PRODUCT_KNOWLEDGE = f.read()
+            print(f"Loaded product knowledge: {len(PRODUCT_KNOWLEDGE)} characters")
+        else:
+            # 尝试从GitHub raw加载（Render部署时）
+            try:
+                url = "https://raw.githubusercontent.com/AeverLam/weibaoning-sales-training/main/references/product-knowledge.md"
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    PRODUCT_KNOWLEDGE = resp.text
+                    print(f"Loaded product knowledge from GitHub: {len(PRODUCT_KNOWLEDGE)} characters")
+            except Exception as e:
+                print(f"Failed to load from GitHub: {e}")
+                PRODUCT_KNOWLEDGE = ""
+    except Exception as e:
+        print(f"Error loading product knowledge: {e}")
+        PRODUCT_KNOWLEDGE = ""
+
+load_product_knowledge()
+
 # ============ 评分维度（新） ============
 # 每轮10分：内容准确性3分 + 表达清晰度2分 + 客户需求匹配2分 + 专业度2分 + 加分项1分
 
@@ -300,6 +329,70 @@ def should_advance_round(doctor_reply, exchange_count):
 
 def evaluate_response(user_message, doctor_context, round_num, follow_up_count):
     """评估用户回答质量（新评分维度）"""
+    
+    # 根据轮次提供知识库参考
+    knowledge_ref = ""
+    if PRODUCT_KNOWLEDGE:
+        if round_num == 1:
+            knowledge_ref = """
+**第1轮参考知识（内异症疾病）**：
+- 子宫内膜异位症被称为"不死的癌症"
+- 三大难题：疼痛（70-80%患者）、复发（2年20%，5年50%）、不孕（20-50%患者）
+"""
+        elif round_num == 2:
+            knowledge_ref = """
+**第2轮参考知识（产品信息）**：
+- 维宝宁通用名：注射用醋酸曲普瑞林微球
+- 规格：3.75mg/瓶
+- 适应症：子宫内膜异位症（I至IV期）
+- 治疗理念："告别异痛，维守芳华"
+"""
+        elif round_num == 3:
+            knowledge_ref = """
+**第3轮参考知识（作用机制）**：
+- GnRH-a类药物，抑制垂体-卵巢轴，降低雌激素
+- 形成药物性闭经，使异位内膜萎缩
+- 微球制剂缓释，维持稳定血药浓度
+"""
+        elif round_num == 4:
+            knowledge_ref = """
+**第4轮参考知识（临床数据）**：
+- 痛经VAS降低99%，盆腔痛VAS降低75%
+- E2去势率97.45%（第12周）
+- 囊肿缩小5.0mm（vs达菲林2.0mm）
+- 月经恢复缩短8-12天
+- 妊娠率87.3%
+"""
+        elif round_num == 5:
+            knowledge_ref = """
+**第5轮参考知识（安全性）**：
+- Cmax仅1.32ng/ml（达菲林的18%）
+- 辅料PLGA仅为达菲林的18%
+- 注射部位痛发生率2.4%
+- 主要不良反应：低雌激素症状（潮热、阴道干燥）
+"""
+        elif round_num == 6:
+            knowledge_ref = """
+**第6轮参考知识（用法用量）**：
+- 3.75mg，臀部肌肉注射，每4周一次
+- 月经周期第1-5天开始
+"""
+        elif round_num == 7:
+            knowledge_ref = """
+**第7轮参考知识（卖点/竞品）**：
+- 深度降酮率：第1月95.1%，第2-3月100%
+- 突释效应更低，Cmax为达菲林18%
+- 辅料量仅为达菲林18%
+- 医保乙类，支付标准1000元/支
+"""
+        elif round_num == 8:
+            knowledge_ref = """
+**第8轮参考知识（指南/总结）**：
+- 2021年《子宫内膜异位症诊治指南（第三版）》：GnRH-a用于复发防治
+- 首个国产长效曲普瑞林微球，化学药品2.2类
+- 生产厂家：丽珠医药集团
+"""
+    
     eval_prompt = f"""你是一位销售培训专家，正在评估医药代表的回答质量。
 
 **当前轮次**：第{round_num}轮
@@ -307,12 +400,18 @@ def evaluate_response(user_message, doctor_context, round_num, follow_up_count):
 **医药代表回答**：{user_message}
 **追问次数**：{follow_up_count}次
 
+{knowledge_ref}
+
 **评估维度**（总分10分）：
-1. 内容准确性（0-3分）：信息是否正确、专业，数据是否准确
+1. 内容准确性（0-3分）：信息是否正确、专业，数据是否准确（对照知识库检查）
 2. 表达清晰度（0-2分）：逻辑是否清晰、易懂，结构是否合理
 3. 客户需求匹配（0-2分）：是否回应了医生的关切和问题
 4. 专业度（0-2分）：是否体现专业素养，术语使用是否得当
 5. 加分项（0-1分）：是否有超出预期的亮点
+
+**准确性特别说明**：
+- 如果回答中包含错误数据（如错误的百分比、错误的用法用量），内容准确性应扣分
+- 如果回答与知识库中的关键数据不符，需要指出错误
 
 **追问惩罚**：
 - 0次追问：不扣分
@@ -327,7 +426,7 @@ def evaluate_response(user_message, doctor_context, round_num, follow_up_count):
 - 0-4分：待提升
 
 **是否需要追问**：
-如果回答得分低于6分或过于简短（少于30字），应该追问。
+如果回答得分低于6分或过于简短（少于30字）或包含错误信息，应该追问。
 
 请输出JSON格式：
 {{
@@ -342,7 +441,7 @@ def evaluate_response(user_message, doctor_context, round_num, follow_up_count):
   "follow_up_question": "如果需要追问，写出追问内容",
   "strengths": ["亮点1", "亮点2"],
   "weaknesses": ["改进点1", "改进点2"],
-  "feedback": "个性化反馈建议"
+  "feedback": "个性化反馈建议（如数据有误请指出正确数据）"
 }}"""
     
     messages = [
@@ -396,11 +495,89 @@ def generate_doctor_reply(session_data, user_message):
     history = session_data.get('messages', [])
     history_text = "\n".join([f"{'医生' if msg['role'] == 'doctor' else '代表'}：{msg['content']}" for msg in history[-6:]])
     
+    # 根据当前轮次提取相关知识
+    knowledge_section = ""
+    if PRODUCT_KNOWLEDGE:
+        if current_round == 1:
+            # 第1轮：内异症疾病背景
+            knowledge_section = """
+**内异症疾病知识**：
+- 子宫内膜异位症被称为"不死的癌症"，严重影响女性身心健康
+- 三大治疗难题：疼痛（70-80%患者有痛经、慢性盆腔痛、性交痛）、复发（术后2年平均复发率20%，5年高达50%）、不孕（20-50%患者合并不孕）
+"""
+        elif current_round == 2:
+            # 第2轮：产品引入
+            knowledge_section = """
+**维宝宁产品基本信息**：
+- 通用名：注射用醋酸曲普瑞林微球
+- 规格：3.75mg/瓶
+- 适应症：子宫内膜异位症（I至IV期）
+- 用法：臀部肌肉注射，每4周一次，月经周期第1-5天开始
+- 治疗理念："告别异痛，维守芳华"
+"""
+        elif current_round == 3:
+            # 第3轮：作用机制
+            knowledge_section = """
+**维宝宁作用机制**：
+- GnRH-a类药物，通过抑制垂体-卵巢轴，降低雌激素水平
+- 形成药物性闭经，使异位内膜萎缩
+- 微球制剂实现缓释，维持稳定的血药浓度
+"""
+        elif current_round == 4:
+            # 第4轮：临床证据
+            knowledge_section = """
+**维宝宁临床数据**：
+- 痛经VAS评分较基线降低99%
+- 非经期盆腔痛VAS评分较基线降低75%
+- E2去势率：治疗第12周末高达97.45%
+- 异位囊肿缩小中位数：5.0mm（vs达菲林2.0mm，p<0.05）
+- 月经恢复时间缩短8-12天
+- 临床妊娠率：87.3%（网状Meta分析，三者最高）
+"""
+        elif current_round == 5:
+            # 第5轮：安全性
+            knowledge_section = """
+**维宝宁安全性特点**：
+- 创新微球专利技术，突释效应更低
+- 给药初期Cmax值仅1.32ng/ml，约为达菲林的18%
+- 辅料（PLGA）量更少，仅为达菲林的18%
+- 注射部位痛发生率仅2.4%
+- 不良反应：主要为低雌激素症状（潮热、阴道干燥等）
+"""
+        elif current_round == 6:
+            # 第6轮：用法用量
+            knowledge_section = """
+**维宝宁用法用量**：
+- 子宫内膜异位症：3.75mg，臀部肌肉注射，每4周一次
+- 开始时间：月经周期第1-5天开始治疗
+- 包装：每盒含无菌粉末1瓶 + 助悬剂2ml玻璃安瓿1支
+- 贮藏：遮光，密闭，2-8℃保存
+"""
+        elif current_round == 7:
+            # 第7轮：处理异议（价格/竞品）
+            knowledge_section = """
+**维宝宁核心卖点**：
+1. 深度降酮，疗效卓越：深度降酮率（T<20ng/dL）给药第1月95.1%，第2、3月均为100%，优于同类产品
+2. 创新制备工艺，突释效应更低：Cmax仅为达菲林的18%，"反跳现象"引起的不良反应更少
+3. 创新递送技术，安全性更优：辅料量仅为达菲林的18%，注射部位痛发生率仅2.4%
+4. 医保乙类（2023年国谈目录，支付标准1000元/支）
+"""
+        elif current_round == 8:
+            # 第8轮：缔结与跟进
+            knowledge_section = """
+**维宝宁指南推荐**：
+- 2021年《子宫内膜异位症诊治指南（第三版）》：GnRH-a用于复发防治
+- 维宝宁是首个国产长效曲普瑞林微球，化学药品2.2类（改良型新药）
+- 生产厂家：丽珠医药集团股份有限公司
+"""
+    
     prompt = f"""你是一位{doctor_profile['title']}（{doctor_profile['type']}），{doctor_profile['personality']}。
 
 **当前场景**：{scenario['topic']}
 **本轮目标**：{scenario['goal']}
 **当前是第{current_round}轮，本轮已对话{exchange_count}次**
+
+{knowledge_section}
 
 **对话历史**：
 {history_text}
@@ -424,11 +601,12 @@ def generate_doctor_reply(session_data, user_message):
    "明白了，内异症确实棘手。说到产品，维宝宁在这方面有什么特点？【推进到下一轮】"
 
 5. 每次回复控制在2-3句话，保持对话节奏
+6. 基于知识库中的准确数据提问或回应，不要编造数据
 
 请生成医生回复："""
     
     messages = [
-        {"role": "system", "content": "你是一位专业的妇科/生殖科医生，正在进行医药代表拜访。"},
+        {"role": "system", "content": "你是一位专业的妇科/生殖科医生，正在进行医药代表拜访。请基于提供的知识库内容进行对话。"},
         {"role": "user", "content": prompt}
     ]
     
