@@ -410,7 +410,9 @@ def generate_doctor_reply(user_message, session, current_round):
 - 用户说"抑制垂体-卵巢轴"→ "那微球技术怎么实现零突释？"（跳到了微球，不是深入机制）
 - 用户说"微球技术"→ "那临床数据怎么样？"（跳到了数据，不是深入微球）
 
-4. 不要推进轮次，必须追问""""
+4. 不要推进轮次，必须追问
+
+推进到下一轮"""
     else:  # poor 或 acceptable
         if quality == "poor":
             strategy = "POOR"
