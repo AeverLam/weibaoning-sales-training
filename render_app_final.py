@@ -74,6 +74,30 @@ def load_product_knowledge():
 
 load_product_knowledge()
 
+# ============ 飞书 API 工具函数 ============
+def get_feishu_access_token():
+    """获取飞书应用访问令牌"""
+    try:
+        url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
+        headers = {
+            "Content-Type": "application/json"
+        }
+        data = {
+            "app_id": FEISHU_APP_ID,
+            "app_secret": FEISHU_APP_SECRET
+        }
+        resp = requests.post(url, headers=headers, json=data, timeout=10)
+        if resp.status_code == 200:
+            result = resp.json()
+            if result.get("code") == 0:
+                return result.get("app_access_token")
+        print(f"Failed to get access token: {resp.text}")
+        return None
+    except Exception as e:
+        print(f"Error getting access token: {e}")
+        return None
+
+
 # ============ 使用记录保存到多维表格 ============
 def save_training_record(session, user_id, user_name=""):
     """将训练记录保存到飞书多维表格"""
@@ -96,7 +120,8 @@ def save_training_record(session, user_id, user_name=""):
         avg_score = round(total_score / len(evaluations), 1) if evaluations else 0
         
         # 各轮得分
-        round_scores = json.dumps([e.get("score", 0) for e in evaluations], ensure_ascii=False)
+        round_scores_list = [e.get("score", 0) for e in evaluations]
+        round_scores_str = json.dumps(round_scores_list, ensure_ascii=False)
         
         # 对话轮次
         exchange_count = sum(len([m for m in session.get("all_rounds_messages", {}).get(str(i), []) if m["role"] == "user"]) for i in range(1, 9))
@@ -107,37 +132,62 @@ def save_training_record(session, user_id, user_name=""):
         # 医生角色
         doctor_type = session.get("doctor_type", "住院医师")
         doctor_role_map = {
-            "主任级专家": "主任级专家",
-            "科室主任": "科室主任", 
-            "主治医师": "主治医师",
-            "住院医师": "住院医师",
-            "带组专家": "带组专家"
+            "director_expert": "主任级专家",
+            "department_head": "科室主任",
+            "attending": "主治医师",
+            "resident": "住院医师",
+            "team_leader": "带组专家"
         }
         doctor_role = doctor_role_map.get(doctor_type, doctor_type)
         
-        # 准备记录数据
-        record_data = {
-            "fields": {
-                BITABLE_FIELDS["record_id"]: str(uuid.uuid4())[:8],
-                BITABLE_FIELDS["user_id"]: user_id,
-                BITABLE_FIELDS["user_name"]: user_name or "未知用户",
-                BITABLE_FIELDS["doctor_role"]: doctor_role,
-                BITABLE_FIELDS["start_time"]: int(datetime.fromisoformat(start_time.replace('Z', '+00:00')).timestamp() * 1000) if start_time else int(datetime.now().timestamp() * 1000),
-                BITABLE_FIELDS["end_time"]: int(datetime.now().timestamp() * 1000),
-                BITABLE_FIELDS["duration_minutes"]: duration_minutes,
-                BITABLE_FIELDS["total_score"]: total_score,
-                BITABLE_FIELDS["avg_score"]: avg_score,
-                BITABLE_FIELDS["round_scores"]: round_scores,
-                BITABLE_FIELDS["exchange_count"]: exchange_count,
-                BITABLE_FIELDS["completion_status"]: completion_status
+        # 获取飞书访问令牌
+        access_token = get_feishu_access_token()
+        
+        if access_token:
+            # 准备多维表格记录数据
+            url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{BITABLE_APP_TOKEN}/tables/{BITABLE_TABLE_ID}/records"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
             }
-        }
+            
+            # 转换日期格式为毫秒时间戳
+            try:
+                start_timestamp = int(datetime.fromisoformat(start_time.replace('Z', '+00:00')).timestamp() * 1000)
+                end_timestamp = int(datetime.now().timestamp() * 1000)
+            except:
+                start_timestamp = int(datetime.now().timestamp() * 1000)
+                end_timestamp = int(datetime.now().timestamp() * 1000)
+            
+            record_data = {
+                "fields": {
+                    BITABLE_FIELDS["record_id"]: str(uuid.uuid4())[:8],
+                    BITABLE_FIELDS["user_id"]: user_id,
+                    BITABLE_FIELDS["user_name"]: user_name or "未知用户",
+                    BITABLE_FIELDS["doctor_role"]: doctor_role,
+                    BITABLE_FIELDS["start_time"]: start_timestamp,
+                    BITABLE_FIELDS["end_time"]: end_timestamp,
+                    BITABLE_FIELDS["duration_minutes"]: duration_minutes,
+                    BITABLE_FIELDS["total_score"]: total_score,
+                    BITABLE_FIELDS["avg_score"]: avg_score,
+                    BITABLE_FIELDS["round_scores"]: round_scores_str,
+                    BITABLE_FIELDS["exchange_count"]: exchange_count,
+                    BITABLE_FIELDS["completion_status"]: completion_status
+                }
+            }
+            
+            # 调用飞书API写入记录
+            resp = requests.post(url, headers=headers, json=record_data, timeout=10)
+            if resp.status_code == 200:
+                result = resp.json()
+                if result.get("code") == 0:
+                    print(f"[TRAINING_RECORD] ✅ Saved to Bitable - User: {user_id}, Score: {total_score}")
+                else:
+                    print(f"[TRAINING_RECORD] ⚠️ Bitable API error: {result.get('msg')}")
+            else:
+                print(f"[TRAINING_RECORD] ⚠️ Failed to save to Bitable: {resp.status_code}")
         
-        # 调用飞书API保存记录
-        # 注意：这里需要用户授权，暂时记录到日志
-        print(f"[TRAINING_RECORD] User: {user_id}, Score: {total_score}, Duration: {duration_minutes}min")
-        
-        # 尝试保存到文件作为临时方案
+        # 同时保存到本地文件作为备份
         record_file = "/tmp/training_records.jsonl"
         with open(record_file, 'a', encoding='utf-8') as f:
             f.write(json.dumps({
@@ -149,7 +199,7 @@ def save_training_record(session, user_id, user_name=""):
                 "duration_minutes": duration_minutes,
                 "total_score": total_score,
                 "avg_score": avg_score,
-                "round_scores": [e.get("score", 0) for e in evaluations],
+                "round_scores": round_scores_list,
                 "exchange_count": exchange_count,
                 "completion_status": completion_status
             }, ensure_ascii=False) + "\n")
