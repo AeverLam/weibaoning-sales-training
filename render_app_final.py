@@ -1091,6 +1091,8 @@ def _do_generate_reply(open_id, user_id, text):
                 next_opening = next_scenario.get('opening', '')
                 score = evaluation.get('score', 0)
                 feedback = evaluation.get('feedback', '')[:80]
+                doctor_type = session["doctor_type"]
+                doctor = DOCTOR_PROFILES[doctor_type]
 
                 # 将下一轮开场问题加入会话
                 if next_opening:
