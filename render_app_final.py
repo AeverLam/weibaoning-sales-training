@@ -23,21 +23,18 @@ FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
 
 # 多维表格配置（使用记录存储）
-BITABLE_APP_TOKEN = "W8Edb0cYXahUKLsuzohcEpyKnVe"
-BITABLE_TABLE_ID = "tbla37KN2y9RgxAQ"
+BITABLE_APP_TOKEN = os.environ.get("BITABLE_APP_TOKEN", "W0JRbfMx9aBorzsC9cocnH6gnOd")
+BITABLE_TABLE_ID = os.environ.get("BITABLE_TABLE_ID", "tblLXaEzCzK9x8cB")
 BITABLE_FIELDS = {
-    "record_id": "fldKOsrXAy",
-    "user_id": "fldHtd1AEH",
-    "user_name": "fldBqJXZCZ",
-    "doctor_role": "fldhP6l2op",
-    "start_time": "fldvNTuMrO",
-    "end_time": "fldgWntlC6",
-    "duration_minutes": "flda6kV6Sb",
-    "total_score": "fldK0vzgbU",
-    "avg_score": "fldwbq0Z0H",
-    "round_scores": "fldP3M63jQ",
-    "exchange_count": "fldO0F03WT",
-    "completion_status": "fldRZh18lG"
+    "user_id": "fldjw5oOxb",
+    "user_name": "fldKUiTQR3",
+    "doctor_role": "fldg96dj5I",
+    "start_time": "fld6XuAbQJ",
+    "end_time": "fld5TNkXcB",
+    "total_score": "fldJr399Ad",
+    "round_scores": "fldyhPVvE6",
+    "exchange_count": "fldy9qxJ1g",
+    "completion_status": "fld9Q8Ug4i"
 }
 
 # 存储
