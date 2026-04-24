@@ -1270,6 +1270,15 @@ def _do_generate_reply(open_id, user_id, text):
 💡 第1轮/共8轮：{scenario['topic']}
 🎯 目标：{scenario['goal']}"""
 
+    elif text in ["结束", "停止", "stop", "end", "quit", "exit"]:
+        # 清理会话状态
+        if user_id in user_sessions:
+            session_id = user_sessions[user_id]
+            if session_id in sessions:
+                del sessions[session_id]
+            del user_sessions[user_id]
+        return "✅ 训练已结束。发送「开始」可重新练习。"
+
     elif text in ["/help", "帮助", "?", "？"]:
         return """🎯 维宝宁销售培训机器人
 
