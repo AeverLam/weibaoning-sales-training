@@ -1206,6 +1206,11 @@ def generate_reply(open_id, user_id, text):
 
 
 def _do_generate_reply(open_id, user_id, text):
+    # 使用 open_id 作为用户标识（更可靠），如果为空则使用 user_id
+    user_key = open_id if open_id else user_id
+    if not user_key:
+        return "系统错误：无法识别用户身份"
+    
     if text in ["/start", "开始", "开始训练", "开始练习"]:
         reply_text = """🎯 请选择医生角色开始训练：
 
@@ -1225,10 +1230,10 @@ def _do_generate_reply(open_id, user_id, text):
    影响力型、决策权高
 
 请回复数字 1-5 选择医生"""
-        user_sessions[user_id] = "selecting_doctor"
+        user_sessions[user_key] = "selecting_doctor"
         return reply_text
 
-    elif text in ["1", "2", "3", "4", "5"] and user_sessions.get(user_id) == "selecting_doctor":
+    elif text in ["1", "2", "3", "4", "5"] and user_sessions.get(user_key) == "selecting_doctor":
         doctor_map = {"1": "主任级专家", "2": "科室主任", "3": "主治医师", "4": "住院医师", "5": "带组专家"}
         doctor_type = doctor_map.get(text, "副主任医师")
 
@@ -1249,7 +1254,7 @@ def _do_generate_reply(open_id, user_id, text):
             "status": "active"
         }
         sessions[session_id] = session_data
-        user_sessions[user_id] = session_id
+        user_sessions[user_key] = session_id
 
         scenario = DIALOGUE_SCENARIOS[0]
         doctor = DOCTOR_PROFILES[doctor_type]
@@ -1272,11 +1277,11 @@ def _do_generate_reply(open_id, user_id, text):
 
     elif text in ["结束", "停止", "stop", "end", "quit", "exit"]:
         # 清理会话状态
-        if user_id in user_sessions:
-            session_id = user_sessions[user_id]
+        if user_key in user_sessions:
+            session_id = user_sessions[user_key]
             if session_id in sessions:
                 del sessions[session_id]
-            del user_sessions[user_id]
+            del user_sessions[user_key]
         return "✅ 训练已结束。发送「开始」可重新练习。"
 
     elif text in ["/help", "帮助", "?", "？"]:
@@ -1291,17 +1296,17 @@ def _do_generate_reply(open_id, user_id, text):
 
 发送「开始」即可开始训练！"""
 
-    elif user_sessions.get(user_id) == "selecting_doctor":
+    elif user_sessions.get(user_key) == "selecting_doctor":
         return "请选择医生：回复 1-5 选择医生角色"
 
-    elif user_id in user_sessions:
-        session_id = user_sessions[user_id]
+    elif user_key in user_sessions:
+        session_id = user_sessions[user_key]
 
         if session_id in ["selecting_doctor", None]:
             return "会话异常，请发送「开始」重新开始"
 
         if session_id not in sessions:
-            del user_sessions[user_id]
+            del user_sessions[user_key]
             return "会话已过期，请发送「开始」重新开始"
 
         session = sessions[session_id]
@@ -1310,7 +1315,7 @@ def _do_generate_reply(open_id, user_id, text):
 
         if current_round > 8:
             summary = generate_summary(session)
-            del user_sessions[user_id]
+            del user_sessions[user_key]
             return summary + "\n\n🎉 训练结束！发送「开始」可重新练习。"
 
         round_data["exchange_count"] += 1
@@ -1361,7 +1366,7 @@ def _do_generate_reply(open_id, user_id, text):
                 # 保存训练记录
                 save_training_record(session, user_id, session.get("user_name", ""))
                 
-                del user_sessions[user_id]
+                del user_sessions[user_key]
                 score = evaluation.get('score', 0)
                 feedback = evaluation.get('feedback', '')[:80]
 
