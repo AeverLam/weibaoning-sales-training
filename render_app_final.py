@@ -167,15 +167,12 @@ def save_training_record(session, user_id, user_name=""):
             
             record_data = {
                 "fields": {
-                    BITABLE_FIELDS["record_id"]: str(uuid.uuid4())[:8],
                     BITABLE_FIELDS["user_id"]: user_id,
                     BITABLE_FIELDS["user_name"]: user_name or "未知用户",
                     BITABLE_FIELDS["doctor_role"]: doctor_role,
                     BITABLE_FIELDS["start_time"]: start_timestamp,
                     BITABLE_FIELDS["end_time"]: end_timestamp,
-                    BITABLE_FIELDS["duration_minutes"]: duration_minutes,
                     BITABLE_FIELDS["total_score"]: total_score,
-                    BITABLE_FIELDS["avg_score"]: avg_score,
                     BITABLE_FIELDS["round_scores"]: round_scores_str,
                     BITABLE_FIELDS["exchange_count"]: exchange_count,
                     BITABLE_FIELDS["completion_status"]: completion_status
