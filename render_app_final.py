@@ -25,16 +25,17 @@ ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
 # 多维表格配置（使用记录存储）
 BITABLE_APP_TOKEN = os.environ.get("BITABLE_APP_TOKEN", "W0JRbfMx9aBorzsC9cocnH6gnOd")
 BITABLE_TABLE_ID = os.environ.get("BITABLE_TABLE_ID", "tblLXaEzCzK9x8cB")
+# 使用字段名（不是字段ID），API会自动匹配
 BITABLE_FIELDS = {
-    "user_id": "fldjw5oOxb",
-    "user_name": "fldKUiTQR3",
-    "doctor_role": "fldg96dj5I",
-    "start_time": "fld6XuAbQJ",
-    "end_time": "fld5TNkXcB",
-    "total_score": "fldJr399Ad",
-    "round_scores": "fldyhPVvE6",
-    "exchange_count": "fldy9qxJ1g",
-    "completion_status": "fld9Q8Ug4i"
+    "user_id": "用户ID",
+    "user_name": "用户姓名",
+    "doctor_role": "医生角色",
+    "start_time": "开始时间",
+    "end_time": "结束时间",
+    "total_score": "总评分",
+    "round_scores": "各轮得分",
+    "exchange_count": "对话轮数",
+    "completion_status": "完成状态"
 }
 
 # 存储
@@ -73,10 +74,10 @@ load_product_knowledge()
 
 # ============ 飞书 API 工具函数 ============
 def get_feishu_access_token():
-    """获取飞书应用访问令牌"""
+    """获取飞书租户访问令牌（使用user_access_token方式）"""
     try:
-        print(f"[BITABLE] Getting access token... App ID: {FEISHU_APP_ID[:10]}...")
-        url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
+        print(f"[BITABLE] Getting tenant access token... App ID: {FEISHU_APP_ID[:10]}...")
+        url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
         headers = {
             "Content-Type": "application/json"
         }
@@ -91,8 +92,8 @@ def get_feishu_access_token():
             result = resp.json()
             print(f"[BITABLE] Token API response code: {result.get('code')}")
             if result.get("code") == 0:
-                token = result.get("app_access_token")
-                print(f"[BITABLE] ✅ Got access token: {token[:20]}...")
+                token = result.get("tenant_access_token")
+                print(f"[BITABLE] ✅ Got tenant access token: {token[:20]}...")
                 return token
             else:
                 print(f"[BITABLE] ❌ Token API error: {result.get('msg')}")
