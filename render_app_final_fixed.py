@@ -23,8 +23,8 @@ FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
 
 # 飞书多维表格配置（维宝宁训练数据看板）
-BITABLE_APP_TOKEN = os.environ.get("BITABLE_APP_TOKEN", "Ud7fbnOnladAaZsuWd8cPcENnEb")
-BITABLE_TABLE_ID = os.environ.get("BITABLE_TABLE_ID", "tbliffpbEyRu59S0")
+BITABLE_APP_TOKEN = os.environ.get("BITABLE_APP_TOKEN", "W0JRbfMx9aBorzsC9cocnH6gnOd")
+BITABLE_TABLE_ID = os.environ.get("BITABLE_TABLE_ID", "tblLXaEzCzK9x8cB")
 
 # 存储
 sessions = {}
