@@ -21,6 +21,10 @@ app = Flask(__name__)
 FEISHU_APP_ID = os.environ.get('FEISHU_APP_ID', 'cli_a938ac2a24391bcb')
 FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', '')
 
+# 飞书多维表格配置（训练数据看板）
+BITABLE_APP_TOKEN = os.environ.get('BITABLE_APP_TOKEN', 'W0JRbfMx9aBorzsC9cocnH6gnOd')
+BITABLE_TABLE_ID = os.environ.get('BITABLE_TABLE_ID', 'tblLXaEzCzK9x8cB')
+
 # 数据目录
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data', 'sessions')
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -141,6 +145,78 @@ def send_card(open_id, msg_id, card_data):
         except:
             pass
     threading.Thread(target=do, daemon=True).start()
+
+
+def save_to_bitable(user_id, user_name, doctor_type, scores, final_report):
+    """保存训练记录到飞书多维表格（异步）"""
+    def do_save():
+        try:
+            token = get_token()
+            if not token:
+                print(f"[BITABLE] 无法获取token")
+                return
+            
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            
+            # 计算各维度平均分
+            dimensions = final_report.get('dimension_scores', {})
+            
+            # 构建记录数据
+            now = datetime.now()
+            now_timestamp = int(now.timestamp() * 1000)  # 毫秒时间戳
+            
+            record_data = {
+                "fields": {
+                    "用户ID": user_id,
+                    "用户姓名": user_name or "未知用户",
+                    "医生角色": doctor_type,
+                    "开始时间": now_timestamp,
+                    "结束时间": now_timestamp,
+                    "总评分": final_report.get('overall_score', 0),
+                    "各轮得分": json.dumps(scores),
+                    "对话轮数": len(scores),
+                    "完成状态": "已完成"
+                }
+            }
+            
+            url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{BITABLE_APP_TOKEN}/tables/{BITABLE_TABLE_ID}/records"
+            resp = requests.post(url, headers=headers, json=record_data, timeout=10)
+            result = resp.json()
+            
+            if result.get("code") == 0:
+                print(f"[BITABLE] ✅ 记录写入成功: 用户{user_name or user_id}, 分数{final_report.get('overall_score', 0)}")
+            else:
+                print(f"[BITABLE] ❌ 写入失败: {result}")
+        
+        except Exception as e:
+            print(f"[BITABLE] ⚠️ 异常: {e}")
+    
+    threading.Thread(target=do_save, daemon=True).start()
+
+
+def get_user_name(user_id):
+    """获取用户姓名"""
+    try:
+        token = get_token()
+        if not token:
+            return None
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"https://open.feishu.cn/open-apis/contact/v3/users/{user_id}"
+        params = {"user_id_type": "open_id"}
+        
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        result = resp.json()
+        
+        if result.get("code") == 0:
+            user = result.get("data", {}).get("user", {})
+            return user.get("name")
+        return None
+    except:
+        return None
 
 
 def format_evaluation_card(evaluation, round_num):
@@ -419,6 +495,13 @@ def handle_msg(text, user_id, msg_id=None):
         
         # 发送卡片形式的最终报告
         card_data = format_final_report_card(final_report)
+        
+        # 保存到飞书多维表格（异步）
+        engine = get_session(user_id)
+        if engine:
+            scores = [s.get('total_score', 0) for s in engine.scores]
+            user_name = get_user_name(user_id)
+            save_to_bitable(user_id, user_name, engine.doctor_type, scores, final_report)
         
         # 清理会话
         clear_user_session(user_id)
