@@ -72,11 +72,21 @@ class AI_DialogueEngine:
 **对练目标**：帮助医药代表练习{self.scenario_info.get('focus', '销售话术')}技巧
 
 **维宝宁产品知识参考**：
-- 通用名：注射用醋酸亮丙瑞林微球
-- 适应症：子宫内膜异位症、子宫肌瘤、中枢性性早熟、前列腺癌、乳腺癌
-- 特点：E2去势率97.45%，网状Meta分析94项RCT，妊娠率87.3%
+- 通用名：注射用醋酸曲普瑞林微球（注意：不是亮丙瑞林）
+- 适应症：子宫内膜异位症、前列腺癌
+- 内异症III期临床数据：
+  * 注射部位痛：1.53%（vs 对照组4.08%）
+  * 注射部位硬结：0.51%（vs 对照组3.06%）
+  * E2去势率：97.45%
+  * 痛经VAS降低99%，盆腔痛降低75%
+  * 月经恢复时间缩短12天
+- 前列腺癌III期临床数据：
+  * 注射部位痛：2.4%
+  * 深度降酮率：100%（第2、3月）
+- 网状Meta分析（94项RCT）：妊娠率87.3%（最高），复发率28.5%（最低）
 - 规格：3.75mg/支
 - 价格：约1000元/支
+- 核心优势：零突释技术，Cmax仅为达菲林1/5，PLGA含量仅为达菲林18%
 
 现在开始对话，请等待医药代表开场。"""
         
@@ -215,10 +225,9 @@ class AI_DialogueEngine:
     
     def evaluate_response(self, user_message, doctor_context):
         """
-        使用LLM实时评估用户回答质量
-        新评分标准：每轮10分制
+        使用LLM实时评估用户回答质量 - 增强版（强制个性化反馈）
         """
-        eval_prompt = f"""你是一位销售培训专家，正在评估医药代表的回答质量。
+        eval_prompt = f"""你是一位资深的医药销售培训专家，正在评估医药代表的回答质量。
 
 **当前场景**：{self.scenario_info['description']}
 **当前轮次**：第{self.round}轮
@@ -230,6 +239,12 @@ class AI_DialogueEngine:
 **医药代表的回答**：
 {user_message}
 
+【重要要求】
+1. **必须基于回答的具体内容**给出反馈，禁止套用模板
+2. **亮点必须具体**：例如"提到了III期临床数据97.45%"、"主动询问了医生关注点"
+3. **改进点必须具体**：例如"缺少具体数字支撑，建议补充E2去势率数据"、"可以先认同再回应"
+4. **反馈必须个性化**：结合本轮对话的具体内容，不要泛泛而谈
+
 **评估维度**（总分10分）：
 1. 内容准确性（0-3分）：信息是否正确、专业，数据是否准确
 2. 表达清晰度（0-2分）：逻辑是否清晰、易懂，结构是否合理
@@ -238,13 +253,13 @@ class AI_DialogueEngine:
 5. 加分项（0-1分）：是否有超出预期的亮点
 
 **评分标准**：
-- 9-10分：优秀
-- 7-8分：良好
-- 5-6分：合格
-- 0-4分：待提升
+- 9-10分：优秀 - 内容准确、逻辑清晰、完美回应医生关切
+- 7-8分：良好 - 基本合格，有小瑕疵
+- 5-6分：合格 - 需要改进，有明显不足
+- 0-4分：待提升 - 严重偏离或信息错误
 
 **追问判断**：
-如果回答得分低于6分或过于简短（少于20字），应该追问。追问时保持医生角色，用疑问句引导对方补充信息。
+如果回答得分低于6分或过于简短（少于30字）或严重偏离主题，应该追问。
 
 请输出JSON格式：
 {{
@@ -256,10 +271,10 @@ class AI_DialogueEngine:
   "total_score": 总分,
   "grade": "等级(A/B/C/D/F)",
   "need_follow_up": true/false,
-  "follow_up_question": "如果需要追问，写出追问内容",
-  "strengths": ["亮点1", "亮点2"],
-  "weaknesses": ["改进点1", "改进点2"],
-  "feedback": "个性化反馈建议"
+  "follow_up_question": "如果需要追问，写出追问内容（保持医生角色）",
+  "strengths": ["具体亮点1 - 基于回答内容", "具体亮点2 - 基于回答内容"],
+  "weaknesses": ["具体改进点1 - 基于回答内容", "具体改进点2 - 基于回答内容"],
+  "feedback": "个性化反馈 - 必须结合本轮对话具体内容，禁止模板化表述如'建议补充具体数据'"
 }}"""
         
         try:
@@ -286,51 +301,89 @@ class AI_DialogueEngine:
             return self._rule_based_evaluation(user_message)
     
     def _rule_based_evaluation(self, user_message):
-        """基于规则的评分（当LLM不可用时使用）"""
+        """基于规则的评分（当LLM不可用时使用）- 优化版"""
         score = 5  # 基础分
         need_follow_up = False
         follow_up_question = ""
+        strengths = []
+        weaknesses = []
+        
+        # ===== 第8轮特殊处理（达成共识与后续）=====
+        if self.round == 8:
+            # 检查是否有推进合作的行动
+            closing_indicators = ['下周', '资料', '拜访', '联系', '跟进', '试用', '患者', '安排', '确定', '时间']
+            has_closing = any(word in user_message for word in closing_indicators)
+            
+            # 检查是否只是礼貌感谢
+            polite_only = all(word in user_message for word in ['感谢', '支持']) and not has_closing
+            
+            if has_closing:
+                score = min(score + 3, 10)  # 有推进动作，加分
+                strengths.append("主动推进下一步合作")
+            elif polite_only:
+                score = max(score - 2, 3)  # 只是感谢，扣分
+                weaknesses.append("缺少具体的后续行动推进")
+                need_follow_up = True
+                follow_up_question = "那具体什么时候方便？我想尽快落实。"
         
         # 字数检查
-        if len(user_message) < 20:
-            score = 2
+        if len(user_message) < 30:
+            score = max(score - 2, 2)
             need_follow_up = True
             follow_up_question = "能详细说说吗？我想了解更多细节。"
-        elif len(user_message) < 50:
-            score = 4
-            need_follow_up = True
-            follow_up_question = "还有吗？我想听听更具体的介绍。"
+            weaknesses.append("回答过于简短")
+        elif len(user_message) < 60:
+            score = max(score - 1, 3)
+            if not need_follow_up:
+                need_follow_up = True
+                follow_up_question = "还有吗？我想听听更具体的介绍。"
+            weaknesses.append("可以更加详细")
+        else:
+            strengths.append("回答内容充实")
         
-        # 关键词匹配加分
-        keywords = ['E2', '去势率', '97%', '微球', '亮丙瑞林', '子宫内膜异位症', '妊娠率', '87.3%']
+        # 关键词匹配加分（修正：去掉亮丙瑞林，加上曲普瑞林）
+        keywords = ['E2', '去势率', '97%', '微球', '曲普瑞林', '子宫内膜异位症', '妊娠率', '87.3%', 
+                    'III期', '临床', '数据', 'Meta', '分析']
         matches = sum(1 for w in keywords if w in user_message)
-        if matches >= 2:
-            score += 2
+        if matches >= 3:
+            score = min(score + 2, 10)
+            strengths.append(f"引用了{matches}个关键数据点")
         elif matches >= 1:
-            score += 1
+            score = min(score + 1, 10)
+            strengths.append("提到了产品数据")
+        else:
+            weaknesses.append("缺少具体数据支撑")
         
         # 限制最高分
         score = min(score, 10)
         
-        # 生成反馈
+        # 生成个性化反馈（不再是模板）
         if score >= 9:
-            feedback = "🌟 表现优秀！话术专业、逻辑清晰。"
             grade = "A"
+            feedback = f"🌟 表现优秀！{' '.join(strengths)}"
         elif score >= 7:
-            feedback = "👍 表现良好，掌握了基本技巧。"
             grade = "B"
+            feedback = f"👍 表现良好！{' '.join(strengths)}"
+            if weaknesses:
+                feedback += f" 建议改进：{' '.join(weaknesses[:1])}"
         elif score >= 5:
-            feedback = "💡 表现一般，建议加强学习。"
             grade = "C"
+            feedback = f"💡 表现合格。亮点：{' '.join(strengths[:1]) if strengths else '态度积极'}；改进：{' '.join(weaknesses[:2])}"
             if not need_follow_up:
                 need_follow_up = True
                 follow_up_question = "能再具体说说吗？"
         else:
-            feedback = "📝 需要改进！建议系统学习。"
             grade = "D"
+            feedback = f"📝 需要改进。{' '.join(weaknesses[:2])}"
             if not need_follow_up:
                 need_follow_up = True
                 follow_up_question = "我不太明白你的意思，能再解释一下吗？"
+        
+        # 确保有默认的strengths和weaknesses
+        if not strengths:
+            strengths = ["态度积极"]
+        if not weaknesses:
+            weaknesses = ["继续保持"]
         
         return {
             "content_accuracy": min(score * 0.3, 3),
@@ -342,8 +395,8 @@ class AI_DialogueEngine:
             "grade": grade,
             "need_follow_up": need_follow_up,
             "follow_up_question": follow_up_question,
-            "strengths": ["态度积极"] if score >= 5 else [],
-            "weaknesses": ["可以更加详细"] if score < 7 else [],
+            "strengths": strengths[:2],
+            "weaknesses": weaknesses[:2],
             "feedback": feedback
         }
     
